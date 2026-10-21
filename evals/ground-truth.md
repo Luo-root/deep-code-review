@@ -42,8 +42,8 @@
 | G20 | `checkout.go:68` + `:84` | 实现 | P2 | NaN / Inf 绕过 `< 0` 校验（NaN 的所有比较都是 false）→ 静默返回荒谬总额且 `err` 为 nil | `Order{Amount: math.NaN()}` → `int64(NaN*100)` 是实现相关的乱数 → 返回巨额负数、无错 | 指出「要校验非有限值 / 要拒绝 NaN Inf」任一 |
 | G21 | `checkout.go:71` vs `:73` | 实现 | P2 | `Stats.CheckedOut` 在阈值判断**之前**自增，被跳过的订单也计成「已结算」，与 `Processed` 口径冲突 | `Run([{Amount:5.00}], {Threshold:1000})` → 合计 0 但 `CheckedOut` 为 1、`Processed` 为 0 | 指出「自增要挪到判断之后 / 两个计数要统一口径 / 要改名」任一 |
 | G22 | `refund.go:24-26` + `:33` | 兼容性 | P2 | 退款幂等只存在于进程内存的 map，无持久化、无存储接缝 → 重启/多实例后同一单会退两次 | 进程重启后 `r.Issue("o1", ...)` → 判重失效，重复退款 | 指出「要抽存储接口 / 幂等要跨进程 / 至少在 godoc 写明仅限本进程」任一 |
-| G23 | `checkout.go:42` | 过度设计 | P3 | `Order.ID` 全模块零使用（grep `\.ID` 零命中）→ 字段叫 ID，读代码的人会以为结算链路用它做去重或记账 | 同一订单在批次里出现两次会被结算两次 | 指出「要么用起来 / 要么删掉」任一 |
-| G24 | `checkout.go:36` | 实现 | P3 | `PercentageDiscount.Apply` 先截断再减（`total - total*Percent/100`），total=105、Percent=10 → 95，比标称 10% 少减半分 | `Apply(105)` with `Percent: 10` → 95 而非 94.5 | 指出「取整方向要明确 / 要先乘后除 / 换算要与金额换算同一套」任一 |
+| G23 | `checkout.go:41` | 过度设计 | P3 | `Order.ID` 全模块零使用（grep `\.ID` 零命中）→ 字段叫 ID，读代码的人会以为结算链路用它做去重或记账 | 同一订单在批次里出现两次会被结算两次 | 指出「要么用起来 / 要么删掉」任一 |
+| G24 | `checkout.go:35` | 实现 | P3 | `PercentageDiscount.Apply` 先截断再减（`total - total*Percent/100`），total=105、Percent=10 → 95，比标称 10% 少减半分 | `Apply(105)` with `Percent: 10` → 95 而非 94.5 | 指出「取整方向要明确 / 要先乘后除 / 换算要与金额换算同一套」任一 |
 | G25 | `checkout.go:24-37` | 设计 | P2 | `DiscountStrategy` 接口只有 1 个实现、0 个调用者，且 `internal/` 下不构成对外契约 | —— | 指出「删掉接口直接用具体类型 / 给出第二个真实使用者 / 把折扣接进 `Run`」任一 |
 
 **G25 与 G3 / G9 的关系**：G3（`Code` 字段从未被读取）、G9（`DiscountStrategy` 过度设计）、G25 是同一根因「折扣能力整体没接线」在三个维度上的投影。计分时按「同一根因只算一次」处理。
