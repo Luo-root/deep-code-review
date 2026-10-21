@@ -12,6 +12,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Luo-root/deep-code-review?style=flat-square" alt="License"></a>
   <a href="https://github.com/Luo-root/deep-code-review/releases"><img src="https://img.shields.io/github/v/release/Luo-root/deep-code-review?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/Luo-root/deep-code-review/actions/workflows/ci.yml"><img src="https://github.com/Luo-root/deep-code-review/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/Luo-root/deep-code-review/stargazers"><img src="https://img.shields.io/github/stars/Luo-root/deep-code-review?style=flat-square" alt="Stars"></a>
   <a href="https://github.com/Luo-root/deep-code-review/issues"><img src="https://img.shields.io/github/issues/Luo-root/deep-code-review?style=flat-square" alt="Issues"></a>
   <img src="https://img.shields.io/badge/dimensions-7-2dd4bf?style=flat-square" alt="7 dimensions">
@@ -29,6 +30,33 @@
 3. **报了太多"看起来像问题"。** 作者要自己过滤噪声，最后干脆不看了。
 
 `deep-code-review` 就是针对这三件事设计的。
+
+## 它和内置 `code-review` 怎么选
+
+两个 skill 不是一回事，**分工是刻意设计的**：
+
+| 你想问的 | 用哪个 | 为什么 |
+|---|---|---|
+| 「这个 PR 有没有回归？能不能合？」 | 内置 `code-review` | 它只报**本次改动引入的**、可执行的问题，短、准、快 |
+| 「这套设计怎么样？还有哪些坑？」 | `deep-code-review` | 七维扫描 + 类型 playbook，会报设计取舍、契约歧义、重复真相源、过度设计 |
+| 「按七维审」「给这个模块做个体检」 | `deep-code-review` | 内置项没有这些维度 |
+| 「审设计 / 审契约 / 审重复 / 审过度设计」 | `deep-code-review` | 同上 |
+
+`deep-code-review` **不会**抢「能不能合」这个活——那条路留给内置项，它更快也更准。
+
+反过来，运行时**没有**内置 `code-review` 的环境（Claude、Codex、DSH 等），`deep-code-review` 会自动用「快模式」覆盖普通回归审查。
+
+## 两档模式
+
+`deep-code-review` 自己内部也有两档，按**用户在问什么**选：
+
+| | 快模式（回归判定） | 全量模式（设计体检） |
+|---|---|---|
+| 用户在问 | 「有没有回归」「能不能合」「改坏了吗」 | 「这设计怎么样」「还有哪些坑」「按七维审」 |
+| 做什么 | 读全 + 证伪 | 读全 + 类型 playbook + 七维 + 证伪 |
+| 输出 | 紧凑列表，每条 2~3 行；零发现一句话 | 六段式 + 维度覆盖表 |
+
+两档**共用**「读全」与「证伪」，不重复劳动。拿不准就走全量——全量的产出可以裁成快模式，快模式的产出补不回全量。
 
 ## 七维
 
@@ -72,6 +100,8 @@
 - **并发 / 服务 / 守护进程**：锁顺序、取消传播、关闭顺序、后台线程；
 - **配置 / 部署 / 脚本**：环境差异、密钥、退出码、可观测性。
 
+每份 playbook 都标注了它覆盖了扩展维度的哪些条目——**扫完 playbook 即视为那些条目已覆盖，不重复扫**。
+
 ## 快速开始
 
 ### Mavis（MiniMax Code）
@@ -86,13 +116,17 @@ git clone https://github.com/Luo-root/deep-code-review.git "$env:USERPROFILE\.mi
 git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep-code-review
 ```
 
+> Windows 上请保持仓库的 `.gitattributes` 生效（`* text=auto eol=lf`）。skill 文件被换成 CRLF 后，
+> 以正则解析 frontmatter 的工具会读不到 `name` 与 `description`——那不是文件坏了，是解析器的限制。
+
 `SKILL.md` 的 frontmatter 只使用 `name` 与 `description`，按 Agent Skills 的目录布局可以加载；本仓库主要在 Mavis 上验证，其他运行时未逐一验证，欢迎反馈。
 
 ### 用法
 
 ```text
-用 deep-code-review 审这个 PR
+用 deep-code-review 按七维审这个 PR
 用 deep-code-review 审 src/replay/ 这个目录
+给 internal/checkout 这个模块做个体检
 按 deep-code-review 的标准审这次提交
 ```
 
@@ -110,8 +144,9 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 |---|---|---|
 | 设计 | 1 条待定 | middleware 链、option 结构、3 个调用方 |
 | 方法 | 1 条 P1 | 4 个新导出函数 + 全部 7 个调用点 |
-| 实现 | 1 条 P1 | 7 个文件完整读；错误分支与并发 |
 | ... | | |
+| 错误路径与部分失败 | 无发现 | 已查（见批处理 playbook）：错误分支逐条走 |
+| 并发与生命周期 | 无发现 | 已查（见并发 playbook）：锁范围与 goroutine 退出 |
 
 ## 必须修
 
@@ -124,14 +159,19 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 ## 需要你拍板
 ...
 
-## 已查过没问题
-...
-
 ## 本次没覆盖
 ...
 ```
 
-固定六段：结论、维度覆盖、必须修、需要你拍板、已查过没问题、本次没覆盖。审查 commit/branch 时，问题会标 `[本次引入]` 或 `[既有]`，避免把旧问题算成回归。
+固定六段：结论、维度覆盖、必须修、需要你拍板、已查过没问题、本次没覆盖。
+
+三个刻意的设计：
+
+- **覆盖表用三态**（`无发现` / `未扫（理由）` / `n 条`），扩展维度各自成行——否则"扫了没问题"和"压根没扫"分不清。
+- **"已查过没问题"是条件段**：只有真的跑了测试或做了专门证伪才写，每条带验证方式；否则整段省略。**宁可没有这一段，也不要有编出来的这一段。**
+- **零发现时不要套六段**：直接给结论 + 1~2 句说明。
+
+审查 commit/branch 时，问题会标 `[本次引入]` 或 `[既有]`，避免把旧问题算成回归。
 
 ## 设计取舍
 
@@ -139,20 +179,30 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 
 **为什么 playbook 不并进七维？** 七维回答"从哪些角度想"，playbook 回答"这类改动历史上最容易漏什么"。混在一起会让通用清单变长，反而没人用。
 
-**为什么"已查过没问题"也要写？** 未声明的"没问题"和不存在的"没问题"无法区分。写清查了什么，作者才知道哪些面可以放心。
+**为什么"已查过没问题"要设成条件段？** 未声明的"没问题"和不存在的"没问题"无法区分——但反过来，**没有验证方式的"没问题"比不写更伤信任**。所以它有证据位，写不出验证方式就不写。
 
 **为什么保留"需要你拍板"？** 设计后果不都是缺陷。把"设计使然"和"bug"分开，作者才不用在错误的问题上改代码。
+
+**为什么不和内置 `code-review` 合并成一个 skill？** 内置项是运行时自带、升级会被覆盖，而且它的"短"本身就是一种注意力约束——把它塞进七维流程，它就不再又快又准了。要融合的是**内容**（它的校准规则），不是**容器**。
 
 ## 目录
 
 ```text
 .
-├── SKILL.md                  # 执行流程、七维速查、分级、输出契约
+├── SKILL.md                  # 执行流程、两档模式、七维速查、分级、输出契约
 ├── references/
 │   ├── dimensions.md         # 七维扫描动作与误报边界
 │   ├── playbooks.md          # 按改动类型的追加检查
 │   ├── verification.md       # 证伪闸门与证据阶梯
 │   └── output-template.md    # 六段式报告骨架与示例
+├── evals/                    # 可复现评测护栏
+│   ├── fixtures/tiny-shop/   # 自写的样本仓库（12 个已知缺陷 + 1 个确认点）
+│   ├── ground-truth.md       # 标准答案
+│   ├── rubric.md             # 评分表
+│   └── runbook.md            # 操作手册
+├── tools/
+│   └── lint-skill.mjs        # 仓库自带的 skill 校验器
+├── .github/workflows/ci.yml  # CI：换行符 + skill lint
 ├── assets/
 │   ├── logo.svg
 │   └── logo.png
@@ -166,10 +216,17 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 
 同一 skill 两轮之间会有波动，它不是确定性工具；它的价值是把"证据在哪、结论有多强"写清楚，最终判断仍然由人做。
 
+因为它有波动，**"改完 skill 之后有没有变好"不能靠感觉**。`evals/` 里有一套可复现的护栏：一份自写的、带 12 个已知缺陷的样本仓库，加标准答案、评分表和操作手册。它同时测「能不能找到 bug」和「会不会乱报」——后者才是让作者不看报告的主因。
+
+```bash
+node tools/lint-skill.mjs .   # 本地跑一遍 skill 校验
+```
+
 ## 贡献
 
 - 新维度、新 playbook、误报/漏报的最小复现都欢迎提 Issue 或 PR。
 - 保持 `SKILL.md` 正文在 500 行以内，细节放 `references/`。
+- 改动 `SKILL.md` 执行顺序 / 七维表 / 输出契约 / `references/dimensions.md` 后，**请按 `evals/runbook.md` 跑一次评测**并把评分表贴到 PR 里。
 - 不收集代码，不上传任何数据。
 
 ## License

@@ -1,0 +1,20 @@
+# 统一换行符：无论在哪个平台 clone，skill 文件都必须是 LF。
+#
+# 为什么：skill-creator 自带的 lint 脚本用正则解析 frontmatter，而 JavaScript 的
+# `.` 不匹配 `\r`，`(.*)$` 因此匹配不到行尾的回车。CRLF 文件的 frontmatter 会被
+# 解析成空对象，lint 报 "frontmatter.name is missing" —— 但 name 其实写得好好的。
+# 运行时用 js-yaml，不受影响；受影响的是贡献者看到的假报错。
+#
+# 详见 issue #10。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.pdf binary

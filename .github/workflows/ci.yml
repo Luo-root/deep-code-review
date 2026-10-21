@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint skill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check line endings (must be LF)
+        run: |
+          if grep -rlU $'\r' --include='*.md' . ; then
+            echo "::error::CRLF found in markdown files. .gitattributes must keep them LF."
+            exit 1
+          fi
+
+      - name: Lint the skill
+        run: node tools/lint-skill.mjs .

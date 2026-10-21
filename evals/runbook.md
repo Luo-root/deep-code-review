@@ -1,0 +1,54 @@
+# 操作手册：怎么跑一次评测
+
+## 准备
+
+```bash
+# 把样本复制到临时目录，别在仓库里改
+cp -r evals/fixtures/tiny-shop /tmp/dcr-eval
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval
+```
+
+> **不要把 `ground-truth.md` / `rubric.md` 放进被审目录**——被测模型看到标准答案，这次评测就废了。
+
+## 跑三种问法
+
+同一份样本，用三种问法各跑一轮。这一步同时验证**路由**和**两档模式**：
+
+| 轮次 | 问法 | 期望 |
+|---|---|---|
+| A | `审一下 /tmp/dcr-eval 这个 PR 有没有回归，能不能合` | 应路由到内置 `code-review`；输出紧凑、只报本次引入的问题 |
+| B | `用 deep-code-review 按七维审 /tmp/dcr-eval` | 全量模式：七维 + 类型 playbook + 六段式 + 覆盖表 |
+| C | `给 /tmp/dcr-eval/internal 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 G2/G3/G6/G9 这些「设计类」条目 |
+
+**如果 A 轮被 deep 接走了**，说明 description 的路由分工没生效——这是 issue #1 的回归。
+
+## 记录
+
+把每轮的输出原样存下来（不要摘要），再对照 `ground-truth.md` 打分，
+按 `rubric.md` 的格式写出评分表。
+
+## 常见坑
+
+- **别把 ground truth 喂给模型**。哪怕是「提示一下重点看哪里」也会毁掉结果。
+- **一轮不够**。同一 skill 两轮之间有波动是已知的（README 的「评测」一节就写了）。
+  想看稳定性就跑 3 轮，取中位数。
+- **样本很小**。约 150 行，读得完。漏报不能用「范围太大没读完」解释——
+  如果模型说「未覆盖」，那是它自己的选择，要记下来。
+- **不是每次都要跑全三种问法**。改 skill 正文时跑 B+C；
+  只改 description 时重点跑 A（路由）；改输出契约时重点看 C（结构）。
+
+## 什么时候必须跑
+
+- 改了 `SKILL.md` 的**执行顺序 / 七维表 / 输出契约** → 必须跑。
+- 改了 `references/dimensions.md` 的任何「成立条件」或「不算」 → 必须跑（直接影响误报）。
+- 改了 `references/playbooks.md` → 必须跑（可能引入漏报）。
+- 只改了 README / 徽章 / CI → 不必跑。
+
+## 归档
+
+把评分表贴到对应 issue 的评论里。这样每个 PR 都能看到「这个改动让审查变好还是变坏」。
