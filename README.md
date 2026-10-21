@@ -33,18 +33,22 @@
 
 ## 它和内置 `code-review` 怎么选
 
-两个 skill 不是一回事，**分工是刻意设计的**：
+**两个 skill 都能判「这个 PR 能不能合」**，区别在覆盖面和形态：
 
-| 你想问的 | 用哪个 | 为什么 |
+| | 内置 `code-review` | `deep-code-review` |
 |---|---|---|
-| 「这个 PR 有没有回归？能不能合？」 | 内置 `code-review` | 它只报**本次改动引入的**、可执行的问题，短、准、快 |
-| 「这套设计怎么样？还有哪些坑？」 | `deep-code-review` | 七维扫描 + 类型 playbook，会报设计取舍、契约歧义、重复真相源、过度设计 |
-| 「按七维审」「给这个模块做个体检」 | `deep-code-review` | 内置项没有这些维度 |
-| 「审设计 / 审契约 / 审重复 / 审过度设计」 | `deep-code-review` | 同上 |
+| 合并判定 | ✔ 只报本次改动引入的、可执行的问题 | ✔ 快模式，契约等价（`references/regression-review.md`） |
+| 设计体检 | ✘ 没有这些维度 | ✔ 七维 + 类型 playbook |
+| 输出 | 极简，一条两句 | 快模式同样紧凑；全量模式是六段式 + 覆盖表 |
+| 依赖 | 需要运行时自带 | **自带，不依赖任何其他 skill** |
 
-`deep-code-review` **不会**抢「能不能合」这个活——那条路留给内置项，它更快也更准。
+怎么选：
 
-反过来，运行时**没有**内置 `code-review` 的环境（Claude、Codex、DSH 等），`deep-code-review` 会自动用「快模式」覆盖普通回归审查。
+- 只判「能不能合」，图快 → 内置 `code-review`。它的 prompt 更短，注意力约束更强，所以更快也更准。
+- 想要设计被质疑、契约歧义、重复真相源、过度设计 → `deep-code-review`。内置项没有这些维度。
+- 想从快模式升到全量、不换工具重跑 → `deep-code-review`。
+
+**没有内置 `code-review` 的运行时（Claude、Codex、DSH 等）也不缺能力**——快模式的校准规则就写在 `references/regression-review.md` 里，这个 skill 自给自足。
 
 ## 两档模式
 
@@ -57,6 +61,8 @@
 | 输出 | 紧凑列表，每条 2~3 行；零发现一句话 | 六段式 + 维度覆盖表 |
 
 两档**共用**「读全」与「证伪」，不重复劳动。拿不准就走全量——全量的产出可以裁成快模式，快模式的产出补不回全量。
+
+快模式的完整契约（范围、只报什么、输出形态、什么时候升级到全量）见 `references/regression-review.md`——**它不依赖运行时有没有装内置 `code-review`**。
 
 ## 七维
 
@@ -128,6 +134,7 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 用 deep-code-review 审 src/replay/ 这个目录
 给 internal/checkout 这个模块做个体检
 按 deep-code-review 的标准审这次提交
+帮我看看这个 PR 有没有回归，能不能合
 ```
 
 ## 输出长什么样
@@ -194,6 +201,7 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 │   ├── dimensions.md         # 七维扫描动作与误报边界
 │   ├── playbooks.md          # 按改动类型的追加检查
 │   ├── verification.md       # 证伪闸门与证据阶梯
+│   ├── regression-review.md  # 快模式：合并判定契约（不依赖任何其他 skill）
 │   └── output-template.md    # 六段式报告骨架与示例
 ├── evals/                    # 可复现评测护栏
 │   ├── fixtures/tiny-shop/   # 自写的样本仓库（12 个已知缺陷 + 1 个确认点）

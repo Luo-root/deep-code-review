@@ -21,11 +21,13 @@ Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval
 
 | 轮次 | 问法 | 期望 |
 |---|---|---|
-| A | `审一下 /tmp/dcr-eval 这个 PR 有没有回归，能不能合` | 应路由到内置 `code-review`；输出紧凑、只报本次引入的问题 |
+| A | `审一下 /tmp/dcr-eval 这个 PR 有没有回归，能不能合` | 走**快模式**：输出紧凑、只报本次引入的问题、零发现一句话；**不应**输出六段式骨架 |
 | B | `用 deep-code-review 按七维审 /tmp/dcr-eval` | 全量模式：七维 + 类型 playbook + 六段式 + 覆盖表 |
 | C | `给 /tmp/dcr-eval/internal 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 G2/G3/G6/G9 这些「设计类」条目 |
 
-**如果 A 轮被 deep 接走了**，说明 description 的路由分工没生效——这是 issue #1 的回归。
+**A 轮如果输出的是六段式骨架，就是快模式没生效**——说明 skill 没能根据"用户在问什么"降档。
+
+这一轮比"路由到哪个 skill"更重要：本 skill 自己就该能判合并，不依赖运行时有没有装内置 `code-review`。宿主把 A 轮路由到内置项也算通过（两个 skill 的答案应等价），但**路由到本 skill 时必须给出快模式的形态**。
 
 ## 记录
 

@@ -1,18 +1,19 @@
 ---
 name: deep-code-review
 description: |
-  Evidence-driven design-and-contract review for diffs, commits, branches, PRs/MRs, files,
-  modules, or functions. Sweeps seven dimensions (mechanism-fit design, method/API contracts,
-  implementation defects, documentation clarity, hardcoding, duplicated behavior, over-engineering)
-  plus error paths, concurrency, resource lifecycle, security, compatibility and observability,
-  then reports what must be fixed, what needs your decision, and what was verified clean.
-  Use when the user wants the DESIGN questioned rather than only bugs found: "按七维审" / "审设计" /
-  "审契约" / "审重复" / "审过度设计" / "给这个模块做体检" / "按我的标准审" /
-  "看看这套东西还有哪些坑", or hands over a module and asks for a structural review.
-  Do NOT use for deciding whether a PR has regressions or is safe to merge — that is the built-in
-  `code-review` skill's job (regression-only, faster and sharper). If the runtime has no built-in
-  `code-review`, this skill still covers plain regression review in 快模式.
-  Also do NOT use for explaining how code works, debugging a known failure, implementing or fixing
+  Evidence-driven code review for diffs, commits, branches, PRs/MRs, files, modules, or functions,
+  in two modes. 快模式 (merge decision): report only the defects this change introduces, each with
+  a concrete trigger and impact, compact output, and a "可以合 / 改完再合" verdict. 全量模式
+  (design review): seven dimensions (mechanism-fit design, method/API contracts, implementation
+  defects, documentation clarity, hardcoding, duplicated behavior, over-engineering) plus error
+  paths, concurrency, resource lifecycle, security, compatibility and observability, then what must
+  be fixed, what needs your decision, and what was verified clean.
+  Use when the user says 代码审查 / code review / "review 一下" / "帮我看看这个 PR 有没有问题" /
+  "这个 PR 能不能合" / "合并前自审" / "按我的标准审", or asks for the design to be questioned:
+  "按七维审" / "审设计" / "审契约" / "审重复" / "审过度设计" / "给这个模块做体检" /
+  "看看这套东西还有哪些坑". Both modes live in this skill — a merge decision and a design review
+  never need a second tool.
+  Do NOT use for explaining how code works, debugging a known failure, implementing or fixing
   code, or style/format-only checks.
 ---
 
@@ -34,6 +35,7 @@ description: |
 | `references/dimensions.md` | **必读** | 七维细则与每个维度的「不算」——误报边界只在这里，跳过它就会把「不算」当「算」 |
 | `references/playbooks.md` | 命中改动类型时读对应那一节 | 该类型高频漏掉的专属缺陷 |
 | `references/verification.md` | 每条结论定级前读 | 闸门表、证据阶梯、常见误判 |
+| `references/regression-review.md` | 走快模式时必读 | 合并判定的校准细则与输出形态 |
 | `references/output-template.md` | 只在写报告前读 | 骨架与措辞 |
 
 不确定某条属于哪个 playbook：先读 `references/playbooks.md` 的小标题列表，再决定读哪一节——**不要整份照单全扫**。
@@ -51,6 +53,8 @@ description: |
 | 输出 | 紧凑列表，每条 2~3 行；零发现一句话 | 六段式 + 维度覆盖表 |
 
 两档**共用**第一遍与证伪，不重复劳动。拿不准就走全量——全量的产出可以裁成快模式，快模式的产出补不回全量。
+
+**快模式的校准细则**（范围怎么定、只报什么、输出长什么样、什么时候该升级到全量）见 `references/regression-review.md`。这份契约**不依赖运行时有没有装内置 `code-review`**——没装内置项的运行时，这个 skill 自己就是完整的：合并判定和设计体检都在这里。
 
 ## 坐标系
 
@@ -139,6 +143,8 @@ description: |
 ## 输出契约
 
 宿主若提供结构化评审协议（例如 PR 行内评论格式），**以宿主协议为准**：本契约降级为内容要求（结论 + 分级 + 证据 + 边界），结构让位。
+
+**快模式不套下面的六段骨架**——它的输出形态由 `references/regression-review.md` 定（紧凑列表，零发现一句话）。下面这些要求针对全量模式。
 
 开头三行内给出：**范围与基线 → 总体结论（可以合 / 改完再合 / 方向先定）→ 各级数量**。
 
