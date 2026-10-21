@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="deep-code-review">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#152742"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5EEAD4"/>
+      <stop offset="1" stop-color="#0D9488"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="268" y="318" width="150" height="34" rx="17" fill="url(#teal)" transform="rotate(45 343 335)"/>
+  <circle cx="214" cy="206" r="108" fill="#0E2733" stroke="url(#teal)" stroke-width="20"/>
+  <path d="M 128 175 A 92 92 0 0 1 183 120" fill="none" stroke="#CCFBF1" stroke-width="4" stroke-linecap="round" opacity="0.35"/>
+  <rect x="156" y="168" width="116" height="13" rx="6.5" fill="#E6FFFA" opacity="0.92"/>
+  <rect x="156" y="198" width="74" height="13" rx="6.5" fill="#F59E0B"/>
+  <rect x="156" y="228" width="98" height="13" rx="6.5" fill="#E6FFFA" opacity="0.55"/>
+  <g fill="#1E4D5C">
+    <circle cx="184" cy="452" r="6.5"/>
+    <circle cx="208" cy="452" r="6.5"/>
+    <circle cx="232" cy="452" r="6.5"/>
+    <circle cx="280" cy="452" r="6.5"/>
+    <circle cx="304" cy="452" r="6.5"/>
+    <circle cx="328" cy="452" r="6.5"/>
+  </g>
+  <circle cx="256" cy="452" r="6.5" fill="#F59E0B"/>
+</svg>
