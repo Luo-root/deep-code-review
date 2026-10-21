@@ -27,7 +27,7 @@ Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval
 
 **A 轮如果输出的是六段式骨架，就是快模式没生效**——说明 skill 没能根据"用户在问什么"降档。
 
-这一轮比"路由到哪个 skill"更重要：本 skill 自己就该能判合并，不依赖运行时有没有装内置 `code-review`。宿主把 A 轮路由到内置项也算通过（两个 skill 的答案应等价），但**路由到本 skill 时必须给出快模式的形态**。
+A 轮验的是**快模式本身**：合并判定必须由这个 skill 直接给出，形态是紧凑列表 + 一句结论，不依赖任何其他工具。
 
 ## 记录
 

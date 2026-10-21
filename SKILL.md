@@ -11,8 +11,7 @@ description: |
   Use when the user says 代码审查 / code review / "review 一下" / "帮我看看这个 PR 有没有问题" /
   "这个 PR 能不能合" / "合并前自审" / "按我的标准审", or asks for the design to be questioned:
   "按七维审" / "审设计" / "审契约" / "审重复" / "审过度设计" / "给这个模块做体检" /
-  "看看这套东西还有哪些坑". Both modes live in this skill — a merge decision and a design review
-  never need a second tool.
+  "看看这套东西还有哪些坑". 合并判定与设计体检两类问题都在这里解决，由两档模式分别处理。
   Do NOT use for explaining how code works, debugging a known failure, implementing or fixing
   code, or style/format-only checks.
 ---
@@ -138,7 +137,7 @@ description: |
 ## 判定纪律
 
 - **先判「设计使然」还是「缺陷」。** 由既有设计推导出的结果（例如缺省输入导致本节点不执行）放在「需要拍板」，不要写成 bug。可预期的跳过/缺省是正常语义；只有它与失败不可区分、或静默改变汇聚语义时才算问题。
-- **不要把「没有内置」当成「缺失」。** 基础库没有内置某个应用层能力，不等于引擎缺项；先用现有机制做一次最小组合验证，再下结论。
+- **不要把「没现成实现」当成「缺失」。** 被审项目的基础库若没有某个应用层能力，不等于引擎缺项；先用现有机制做一次最小组合验证，再下结论。
 
 ## 输出契约
 
