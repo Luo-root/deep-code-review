@@ -29,3 +29,6 @@ jobs:
 
       - name: Lint the skill
         run: node tools/lint-skill.mjs .
+
+      - name: Check cross-file consistency
+        run: node tools/lint-consistency.mjs .
