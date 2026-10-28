@@ -212,7 +212,7 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
 // ---------- 6. finding 标签形态：三段齐全，级别段与维度段都是规范值 ----------
 {
   const files = ['SKILL.md', 'README.md', 'references/regression-review.md', 'references/output-template.md'];
-  const ORIGIN = ['本次引入', '既有'];
+  const ORIGIN = ['本次引入', '既有', '现状'];
   const LEVELS = ['P0', 'P1', 'P2', 'P3', '待拍板'];
   const offenders = [];
   let count = 0;
@@ -498,7 +498,7 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
   let cur = null;
   for (const l of pb) {
     if (/^##\s/.test(l)) {
-      cur = { name: l.replace(/^##\s*/, '').trim(), declared: [], items: [] };
+      cur = { name: l.replace(/^##\s*/, '').trim(), declared: [], declaredItems: [], items: [], itemNames: [] };
       sections.push(cur);
       continue;
     }
@@ -521,13 +521,27 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
       }
       parts.push(buf);
       for (const part of parts) {
-        const dim = part.split('（')[0].trim();
-        if (dim) cur.declared.push(dim);
+        const narrowed = part.match(/^([^（]+)（(.+)）$/);
+        if (narrowed) {
+          const dim = narrowed[1].trim();
+          const names = narrowed[2].split('、').map((s) => s.trim()).filter(Boolean);
+          cur.declared.push(dim);
+          cur.declaredItems.push({ dim, names });
+        } else {
+          const dim = part.trim();
+          if (dim) {
+            cur.declared.push(dim);
+            cur.declaredItems.push({ dim, names: null });
+          }
+        }
       }
       continue;
     }
-    const m = l.match(/^- \*\*[^*]+\*\*（([^）]+)）/);
-    if (m) cur.items.push(m[1]);
+    const m = l.match(/^- \*\*([^*]+)\*\*（([^）]+)）/);
+    if (m) {
+      cur.items.push(m[2]);
+      cur.itemNames.push(m[1].trim());
+    }
   }
   const offenders = [];
   for (const s of sections) {
@@ -551,6 +565,33 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     );
   } else {
     ok(`playbook 的覆盖声明与条目一致（${sections.length} 份 playbook，每条必查项都标了规范维度）`);
+  }
+
+  // ---------- 18. 覆盖声明必须逐维度写出条目名，且条目名真的存在 ----------
+  {
+    const bad = [];
+    for (const s of sections) {
+      for (const d of s.declaredItems) {
+        if (!d.names || !d.names.length) {
+          bad.push(`${s.name}：维度「${d.dim}」的覆盖声明没写条目名——只写维度名等于宣称整节覆盖`);
+          continue;
+        }
+        for (const n of d.names) {
+          if (!s.itemNames.includes(n)) {
+            bad.push(`${s.name}：覆盖声明说覆盖「${d.dim}」的「${n}」，但正文里没有这条必查项`);
+          }
+        }
+      }
+    }
+    if (bad.length) {
+      fail(
+        `playbook 的覆盖声明粒度不对：\n    ${bad.join('\n    ')}\n` +
+          '覆盖声明必须逐维度写出条目名（维度名（条目名1、条目名2）），' +
+          '同一维度里没被列出的条目仍要按该维度自己扫——只写维度名会让覆盖表替没查过的条目背书。',
+      );
+    } else {
+      ok('playbook 的覆盖声明逐维度列出了条目名，且每个条目名在本节都能找到对应必查项');
+    }
   }
 }
 
@@ -611,6 +652,87 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     } else {
       ok('结论档决策表 3 行齐全，优先级 方向先定 → 改完再合 → 可以合');
     }
+  }
+}
+
+// ---------- 19. 示例的结论档必须与正文条目自洽 ----------
+{
+  const fencedBlocks = (lines) => {
+    const blocks = [];
+    let cur = null;
+    for (const l of lines) {
+      if (/^\s*```/.test(l)) {
+        if (cur === null) cur = [];
+        else {
+          blocks.push(cur.join('\n'));
+          cur = null;
+        }
+        continue;
+      }
+      if (cur !== null) cur.push(l);
+    }
+    return blocks;
+  };
+  const isExample = (b) => b.includes('| 维度 | 结果 | 查了什么 |') && /P0 \d+、P1 \d+、P2 \d+、P3 \d+、待拍板 \d+/.test(b) && /##\s*必须修/.test(b);
+  const blocks = [
+    ...fencedBlocks(read('README.md')).filter(isExample),
+    ...fencedBlocks(read('references/output-template.md')).filter(isExample),
+  ];
+  const bad = [];
+  for (const b of blocks) {
+    const vm = b.match(/结论：\*{0,2}(可以合|改完再合|方向先定)\*{0,2}/);
+    if (!vm) {
+      bad.push('示例里找不到「结论：**档位**」那一行');
+      continue;
+    }
+    const verdict = vm[1];
+    const p01 = (b.match(/\[P0\]|\[P1\]/g) || []).length;
+    const decide = (b.match(/\[待拍板\]/g) || []).length;
+    if (verdict === '可以合' && p01 > 0) {
+      bad.push(`结论档「可以合」，但正文里有 ${p01} 条 P0/P1——按决策表应为「改完再合」`);
+    }
+    if (verdict === '改完再合' && p01 === 0) {
+      bad.push('结论档「改完再合」，但正文里没有 P0/P1 条目——按决策表应为「可以合」');
+    }
+    if (verdict === '方向先定' && decide === 0) {
+      bad.push('结论档「方向先定」，但正文里没有待拍板条目');
+    }
+  }
+  if (bad.length) {
+    fail(
+      `示例的结论档与正文对不上：\n    ${bad.join('\n    ')}\n` +
+        '结论档决策表是「从上到下匹配，命中第一条即定档」——示例自己必须落在正确的档位，' +
+        '否则模型照着示例写就会给出与规则相反的头号信号。',
+    );
+  } else {
+    ok(`示例的结论档与正文条目自洽（${blocks.length} 个示例块）`);
+  }
+}
+
+// ---------- 20. 快模式的行数预算与字段清单在三处必须一致 ----------
+{
+  const norm = (s) => s.replace(/\s+/g, '');
+  const targets = [
+    ['SKILL.md', '紧凑列表'],
+    ['references/regression-review.md', '紧凑列表'],
+    ['references/output-template.md', '紧凑列表'],
+  ];
+  const missing = [];
+  for (const [f, marker] of targets) {
+    const hit = read(f).some((l) => {
+      const n = norm(l);
+      return n.includes(marker) && n.includes('标题+3行') && n.includes('触发/影响/修法');
+    });
+    if (!hit) missing.push(f);
+  }
+  if (missing.length) {
+    fail(
+      `快模式的行数预算与字段清单没写齐：${missing.join('、')}。\n` +
+        '三处都要写「标题 + 3 行（触发 / 影响 / 修法）」——只写「2~3 行」时，' +
+        '模型为了塞进行数最可能砍掉的就是证据行。',
+    );
+  } else {
+    ok('快模式的行数预算与字段清单在 SKILL.md / regression-review.md / output-template.md 里一致');
   }
 }
 
