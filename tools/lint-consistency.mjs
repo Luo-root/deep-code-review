@@ -218,9 +218,13 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
   let count = 0;
   for (const f of files) {
     for (const l of read(f)) {
-      const re = /\[(P[0-3]|待拍板)\]\[([^\]]+)\](?:\[([^\]]+)\])?/g;
+      // 先匹配任何「[X][Y]」形态，再判合法——否则非法级别（写错成「待定」之类）
+      // 根本不在匹配范围内，检查就成了摆设
+      const re = /\[([^\]\[]{1,12})\]\[([^\]]+)\](?:\[([^\]]+)\])?/g;
       let m;
       while ((m = re.exec(l)) !== null) {
+        const [, level, dim, origin] = m;
+        if (level === '级别' && dim === '维度') continue; // 占位符模板，不是真标签
         count += 1;
         const [, level, dim, origin] = m;
         if (!CANONICAL_DIMENSIONS.includes(dim)) {
