@@ -5,7 +5,7 @@
 | 样本 | 测什么 | 标准答案 | 跑哪几轮 |
 |---|---|---|---|
 | `evals/fixtures/tiny-shop` | 契约、文档、错误路径、并发、兼容性——通用面 | `ground-truth.md`（G1–G25） | A + B + C |
-| `evals/fixtures/rule-engine` | **算法/复杂度**与**架构/设计语义**——反驳与规模扫描 | `ground-truth-rule-engine.md`（R1–R6 + C1） | B + C |
+| `evals/fixtures/rule-engine` | **算法/复杂度**与**架构/设计语义**——反驳与规模扫描 | `ground-truth-rule-engine.md`（R1–R10 里的 9 条 + C1） | B + C |
 
 **为什么分两个样本**：tiny-shop 是 150 行的结算模块，里面**没有指数级回溯，也没有分裂成两条路径的动作**——它测不出新能力。两个样本分开跑，分数分开记，才能同时回答「旧的没退化」和「新的生效了」。
 
@@ -58,7 +58,7 @@ A 轮验的是**快模式本身**：合并判定必须由这个 skill 直接给�
 | 轮次 | 问法 | 期望 |
 |---|---|---|
 | B | `用 deep-code-review 按七维审 /tmp/dcr-eval-rule` | 全量模式：七维 + **反驳** + **规模扫描** + 六段式 + 覆盖表 |
-| C | `给 /tmp/dcr-eval-rule/internal/promo 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 R1–R6 这些「规模 + 语义」条目 |
+| C | `给 /tmp/dcr-eval-rule/internal/promo 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 R1/R3/R4/R5/R6 这些「规模 + 语义」条目 |
 
 **规模类条目在报告里的形态**：给「规模 N → 开销」的关系与实测数字，不是「输入 → 错误结果」那种触发路径。报告没给数字的，按 `ground-truth-rule-engine.md` 的计分要点最多记 0.5。
 
