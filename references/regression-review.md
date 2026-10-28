@@ -27,13 +27,13 @@
 
 ## 输出
 
-紧凑列表，一条 2~3 行：
+紧凑列表，一条 2~3 行。**标签形态与全量模式一致**（`[级别][维度][引入方式]`）——快模式只是不套骨架，标签不省：
 
 ```markdown
 范围：`feature/rate-limit` 相对 `main`（merge-base `a1b2c3d`）。
 **改完再合**。本次改动引入 1 个 P1。
 
-- [P1][本次引入] `internal/ratelimit/redis.go:88` — Redis 超时后放行全部请求
+- [P1][实现][本次引入] `internal/ratelimit/redis.go:88` — Redis 超时后放行全部请求
   触发：`redis.Do` 返回 `context.DeadlineExceeded`，`:91` 把错误当「未限流」返回。
   影响：限流形同虚设，故障期间全部流量打满下游。
   修法：超时走本地兜底计数器（已有 `localFallback`，`:120`）。

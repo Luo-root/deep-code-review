@@ -1,23 +1,20 @@
 ---
 name: deep-code-review
 description: |
-  Evidence-driven code review for diffs, commits, branches, PRs/MRs, files, modules, or functions,
-  in two modes. 快模式 (merge decision): report only the defects this change introduces, each with
-  a concrete trigger and impact, compact output, and a "可以合 / 改完再合" verdict. 全量模式
-  (design review): seven dimensions (mechanism-fit design, method/API contracts, implementation
-  defects, documentation clarity, hardcoding, duplicated behavior, over-engineering) plus error
-  paths, concurrency, security, compatibility, observability, performance and test blind spots;
-  a refutation pass that assumes the design itself is wrong (semantic splits, cross-layer shape
-  mismatches, responsibility overlap); a dedicated scale/complexity scan for algorithmic blowup;
-  falsification gates; then what must be fixed, what is worth fixing, what needs your decision,
-  and what was verified clean.
+  Evidence-driven code review for diffs, branches, PRs/MRs, files, modules or functions, in two
+  modes. 快模式 (merge decision): report only defects this change introduces, each with a trigger
+  and impact, compact output, a "可以合 / 改完再合" verdict. 全量模式 (design review): seven
+  dimensions (design fit, API contracts, implementation, docs, hardcoding, duplication,
+  over-engineering) plus error paths, concurrency, security, compatibility, observability,
+  performance, test blind spots; a refutation pass (assume the design is wrong), a scale/complexity
+  scan, falsification gates; then what must be fixed, what is worth fixing, what needs a decision,
+  what was verified clean.
   Use when the user says 代码审查 / code review / "review 一下" / "帮我看看这个 PR 有没有问题" /
   "这个 PR 能不能合" / "合并前自审" / "按我的标准审", or asks for the design to be questioned:
   "按七维审" / "审设计" / "审契约" / "审重复" / "审过度设计" / "给这个模块做体检" /
   "看看这套东西还有哪些坑" / "这个算法有没有问题" / "扛不扛得住这个数据量" /
-  "这套设计是不是不合理". 合并判定与设计体检两类问题都在这里解决，由两档模式分别处理。
-  Do NOT use for explaining how code works, debugging a known failure, implementing or fixing
-  code, or style/format-only checks.
+  "这套设计是不是不合理".
+  Do NOT use for explaining code, debugging a known failure, or implementing/fixing code.
 ---
 
 # Deep Code Review
@@ -144,7 +141,7 @@ description: |
 
 对每条候选结论回答 `references/verification.md` 的闸门问题。答不上来就降级或删除，不要用措辞掩盖不确定。
 
-最常见的四类降级（细则见闸门表）：没有具体触发路径 → 删；说不出交错窗口 → 降为「待确认」；说不出可预测场景 → 删；说不出两处为什么会一起变 → 降为提示或删。
+最常见的四类降级（**以闸门表为准**）：没有具体触发路径 → 删；说不出交错窗口 → 降为 P2 并标「需确认：X」；说不出可预测场景 → 降为 P2 并标「需确认：X」；说不出两处为什么会一起变 → 降为 P2 并标「需确认：X」。
 
 ### 5. 分级与排序
 
@@ -165,7 +162,7 @@ description: |
 
 - 与本次改动无关 → 不报。
 - 被本次改动直接放大、或本次功能直接依赖它 → **报，但必须标 `[既有]`**，且不进「必须修」的 P0/P1：降为 P2，或进「需要你拍板」。
-- 分不清是不是既有问题 → 用 `git blame` 或与 base 对比确认；确认不了就标「需确认」，不要凭印象归类。
+- 分不清是不是既有问题 → 用 `git blame` 或与 base 对比确认；确认不了就降为 P2 并标「需确认：X」，不要凭印象归类。
 
 不报清单：
 
@@ -209,7 +206,11 @@ description: |
 
 **每一级都要有落点**：P0/P1 进「必须修」，P2/P3 进「建议修」，设计取舍进「需要你拍板」。**不许出现「结论里写了 P2 3、正文里找不到这 3 条」**——分级定了级就要写出来，没有落点的级别等于没分级。
 
-第 2 段每格用三态：`无发现` / `未扫（理由）` / `n 条`；`n 条` 后可附级别标注（`2 条（P1）`、`1 条（待定）`）。扩展维度**各自成行**，不要合并成一行——合并之后「无」就分不清是「扫了没问题」还是「压根没扫」。**「规模与复杂度」也单独成行**，跑过就写结果，没跑就写「未扫（理由）」。
+**「需确认」不是一个独立档位**：它是**降级后的 P2**——证据不足以定级，但值得作者自己看一眼。条目里标「需确认：X」，写清缺什么证据。**不要为它新增一个计数**（结论行只有 P0–P3 与待拍板），也不要把没证实的候选塞进「必须修」去虚报 P1。
+
+**维度名以覆盖表行名为准**：设计 / 方法契约 / 实现 / 文档 / 硬编码 / 重复 / 过度设计。finding 标签里的维度段用同一个名字，不要一处写「方法契约」、另一处写「方法」。
+
+第 2 段每格用四种取值：`无发现` / `已查（见 X）` / `未扫（理由）` / `n 条`；`n 条` 后可附级别标注（`2 条（P1）`、`1 条（待定）`）。`已查（见 X）` 只在**结论归到了别的维度**时用——例如一条 N+1 同时是性能坏味道和规模问题，按「两个桶都成立」的归栏规则落在「规模与复杂度」，性能行就写「已查（见规模与复杂度）」。扩展维度**各自成行**，不要合并成一行——合并之后「无」就分不清是「扫了没问题」还是「压根没扫」。**「规模与复杂度」也单独成行**，跑过就写结果，没跑就写「未扫（理由）」。
 
 第 6 段是**条件段**：只有当本次真的跑了测试、构造了复现，或对某个高风险面做了专门证伪时才写；否则整段省略，并在第 7 段写明未做验证。写了就每条带一句验证方式（跑了什么 / 读了什么 / 对比了哪个 base）——**写不出验证方式的不要写**，宁可这段不存在。
 
@@ -255,7 +256,7 @@ description: |
 ## 失败处理
 
 - 读不到完整改动（二进制、生成代码、私有依赖）→ 明说哪部分没看，不要默认它没问题。
-- 找不到调用方（跨仓库、反射、DI、动态派发）→ 标为「需确认」，不要把「我没找到」写成「没有调用方」。
+- 找不到调用方（跨仓库、反射、DI、动态派发）→ 降为 P2 并标「需确认：X」，不要把「我没找到」写成「没有调用方」。
 - 没法运行测试 → 明说结论基于静态阅读，不要暗示已验证。
 - 范围太大 → 先按风险排序抽查，报告里写清抽样比例和未覆盖部分。
 - 一开始就发现意图理解可能有偏差 → 停下来用一句话确认，不要按错误意图写完整份报告。

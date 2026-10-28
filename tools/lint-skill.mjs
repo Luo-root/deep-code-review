@@ -16,6 +16,9 @@ import { join, basename, resolve } from 'node:path';
 
 const FORBIDDEN_FRONTMATTER_KEYS = ['allowed-tools', 'license', 'model'];
 const MAX_BODY_LINES = 500;
+// Agent Skills 规范：description 必须 1–1024 字符（agentskills.io/specification.md）。
+// 超限时，宽松的实现会截断——截断点常常落在能力说明或触发词中间，命中率直接受损。
+const MAX_DESCRIPTION_CHARS = 1024;
 
 // 成品里不出现相对表述：提一次「内置」，这个 skill 就始终是相对于别的东西定义的。
 // 这条规矩以前靠人工 grep 守，容易漏——机器化之后它就退不回去了。
@@ -146,6 +149,15 @@ if (!desc) {
   }
   if (desc.length < 30) {
     warn(`description is very short (${desc.length} chars); make sure it covers what + when + near misses`);
+  }
+  if (desc.length > MAX_DESCRIPTION_CHARS) {
+    fail(
+      `frontmatter.description is ${desc.length} characters (> ${MAX_DESCRIPTION_CHARS}). ` +
+        'Agent Skills 规范要求 1–1024 字符；超限时运行时可能截断，截断点常落在能力说明或触发词中间。' +
+        '请压缩描述，触发词与能力清单都要留住。',
+    );
+  } else {
+    ok(`description is ${desc.length} characters (limit ${MAX_DESCRIPTION_CHARS})`);
   }
 }
 
