@@ -491,9 +491,8 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
   }
 }
 
-// ---------- 15. playbook 的覆盖声明必须与它的条目对得上 ----------
-{
-  const pb = read('references/playbooks.md');
+// playbook 段解析：抽出成函数，供第 15 / 18 / 21 项共用
+function parsePlaybookSections(pb) {
   const sections = [];
   let cur = null;
   for (const l of pb) {
@@ -505,7 +504,6 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     if (!cur) continue;
     if (/^覆盖扩展维度：/.test(l)) {
       const body = l.replace(/^覆盖扩展维度：/, '').replace(/。\s*$/, '');
-      // 只在括号外按「、」切：括号里的补充说明不是维度名
       let depth = 0;
       let buf = '';
       const parts = [];
@@ -543,6 +541,13 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
       cur.itemNames.push(m[1].trim());
     }
   }
+  return sections;
+}
+
+// ---------- 15. playbook 的覆盖声明必须与它的条目对得上 ----------
+{
+  const pb = read('references/playbooks.md');
+  const sections = parsePlaybookSections(pb);
   const offenders = [];
   for (const s of sections) {
     for (const d of s.declared) {
@@ -742,3 +747,33 @@ if (errors > 0) {
   process.exit(1);
 }
 console.log('✓ All consistency checks passed');
+
+
+// ---------- 21. 必查项的扩展维度标签必须在该段的覆盖声明里 ----------
+{
+  const pb = read('references/playbooks.md');
+  const sections = parsePlaybookSections(pb);
+  const SEVEN = ['设计', '方法契约', '实现', '文档', '硬编码', '重复', '过度设计'];
+  // 「规模与复杂度」按设计不被任何 playbook 覆盖（playbooks.md 的「规模扫描不被任何 playbook 覆盖」一节）
+  const EXEMPT = new Set([...SEVEN, '规模与复杂度']);
+  const bad = [];
+  for (const s of sections) {
+    for (const it of s.items) {
+      for (const dim of it.split('/').map((x) => x.trim())) {
+        if (EXEMPT.has(dim)) continue;
+        if (!s.declared.includes(dim)) {
+          bad.push(`${s.name}：有条必查项标注了「${dim}」，但该段的覆盖声明里没有这个维度`);
+        }
+      }
+    }
+  }
+  if (bad.length) {
+    fail(
+      `playbook 的必查项维度没进覆盖声明：\n    ${bad.join('\n    ')}\n` +
+        '一条必查项标了某个扩展维度，却没写进该段的覆盖声明——它就不在「已覆盖」的名单里，' +
+        '按规则会落回该维度自己扫，而那个维度的正文里未必有这条，等于这条必查项没人扫。',
+    );
+  } else {
+    ok('playbook 每条必查项的扩展维度标签都在该段覆盖声明里');
+  }
+}
