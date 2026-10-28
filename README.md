@@ -53,7 +53,7 @@
 | 2 | 方法契约 | 参数是否遗漏？缺省值是否有歧义（没传 vs 传了零值）？调用方会不会传错、漏传，或被迫绕开函数自己拼？抽象层与实现层、后端层用的类型是同一个形状吗？ |
 | 3 | 实现 | 在什么输入、状态或并发交错下会算错、漏处理、泄漏、死锁？ |
 | 4 | 文档 | 读者照着注释/README/错误信息会不会做错事？ |
-| 5 | 硬编码 | 哪个值被写死了，而它应当可变？先分清它是**协议固定值**（改了就是 bug）还是**业务政策值**（改了只是口径变了，如退款窗口、账期）？ |
+| 5 | 硬编码 | 哪个值被写死了，而它应当可变？分档判据见 `references/dimensions.md` 第 5 维。 |
 | 6 | 重复 | 同一行为是否存在第二个真相源？同一个概念是否分裂成了几条行为不一致的路径？ |
 | 7 | 过度设计 | 删掉它，今天会有什么损失？ |
 
@@ -139,7 +139,7 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 ## 结论
 
 范围：feature/rate-limit 相对 main 的 7 个文件（merge-base a1b2c3d）。
-结论：改完再合 —— P0 0、P1 1、P2 1、P3 0、待拍板 1。
+结论：改完再合 —— P0 0、P1 2、P2 1、P3 0、待拍板 1。
 
 ## 维度覆盖
 
@@ -158,6 +158,12 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 - 影响：限流形同虚设，故障期间全部流量打满下游
 - 证据：:91 把错误当"未限流"返回；TestRedisError 只断言不 panic
 - 修法：超时走本地兜底计数器（已有 localFallback，:120）
+
+### [P1][方法契约][本次引入] internal/ratelimit/limiter.go:33 — Allow(key, n) 无法表达「只扣一次」
+- 触发：批量接口按请求数调用 Allow(key, len(items))，重试时会重复扣减
+- 影响：一次重试把配额扣两次，用户被提前限流
+- 证据：handler/batch.go:71 在重试外层循环里调用
+- 修法：拆成 Check(key) 与 Consume(key, n)
 
 ## 建议修
 
@@ -220,8 +226,9 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 │   ├── baseline.md              # 历次评测基线（追加，不覆盖）
 │   └── README.md                # evals 目录说明
 ├── tools/
-│   └── lint-skill.mjs        # 仓库自带的 skill 校验器
-├── .github/workflows/ci.yml  # CI：换行符 + skill lint
+│   ├── lint-skill.mjs         # 单文件合规校验（frontmatter、体积、链接、相对表述）
+│   └── lint-consistency.mjs   # 跨文件一致性校验（维度名、段名、计数格式、示例自洽）
+├── .github/workflows/ci.yml   # CI：换行符 + skill lint + 跨文件一致性
 ├── assets/
 │   ├── logo.svg
 │   └── logo.png
@@ -242,7 +249,8 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 **样本决定了测得到什么。** 现有样本是 150 行的结算模块，它测得出契约、文档、错误路径、并发这些面，**测不出算法复杂度与语义分裂**——样本里没有指数级回溯，也没有分裂成两条路径的动作。新能力要落地，得先有能触发它的样本与标准答案条目，否则「改完变好了还是变坏了」又变成凭感觉。
 
 ```bash
-node tools/lint-skill.mjs .   # 本地跑一遍 skill 校验
+node tools/lint-skill.mjs .        # 单文件合规校验
+node tools/lint-consistency.mjs .  # 跨文件一致性校验
 ```
 
 ## 贡献

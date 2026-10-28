@@ -50,6 +50,18 @@ function section(lines, headingRe) {
   return out;
 }
 
+/** 取 frontmatter 里某个键的值（支持 `|` 块标量） */
+function frontmatterBlock(lines, key) {
+  const start = lines.findIndex((l) => l.startsWith(`${key}:`));
+  if (start === -1) return '';
+  const out = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (!/^\s+\S/.test(lines[i])) break;
+    out.push(lines[i].trim());
+  }
+  return out.join(' ').trim();
+}
+
 // ---------- 1. 七维速查表：SKILL.md 与 README.md 必须逐行一致 ----------
 {
   const pick = (lines) => lines.filter((l) => /^\|\s*[1-7]\s*\|/.test(l)).map((l) => l.trim());
@@ -272,6 +284,197 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     );
   } else {
     ok(`闸门表覆盖了覆盖表的全部 ${CANONICAL_DIMENSIONS.length} 个维度（闸门表共 ${gateTypes.length} 类结论）`);
+  }
+}
+
+// ---------- 9. 必答句清单必须覆盖覆盖表的每一个维度 ----------
+{
+  // 每个覆盖表维度在「每个维度的必答句」里对应哪几句
+  const MUST_ANSWER_OF = {
+    设计: ['设计'],
+    方法契约: ['缺参数', '跨层形状'],
+    实现: ['实现'],
+    文档: ['文档'],
+    硬编码: ['硬编码'],
+    重复: ['重复', '语义分裂', '职责重叠'],
+    过度设计: ['过度设计'],
+    错误路径与部分失败: ['错误路径与部分失败'],
+    并发与生命周期: ['并发'],
+    安全: ['安全'],
+    兼容性: ['兼容性'],
+    可观测性: ['可观测性'],
+    性能: ['性能'],
+    规模与复杂度: ['规模'],
+    测试盲区: ['测试盲区'],
+  };
+  const verif = read('references/verification.md');
+  const bullets = section(verif, /^##\s*每个维度的必答句/)
+    .filter((l) => /^\s*-\s/.test(l))
+    .map((l) => l.replace(/^\s*-\s*/, '').split('：')[0].trim());
+  const missing = [];
+  for (const [dim, keys] of Object.entries(MUST_ANSWER_OF)) {
+    for (const k of keys) {
+      if (!bullets.includes(k)) missing.push(`${dim}（缺「${k}」）`);
+    }
+  }
+  if (missing.length) {
+    fail(
+      `「每个维度的必答句」没覆盖这些维度：${missing.join('、')}。` +
+        '必答句是每条结论定级前的检查清单——缺一维，这一维的结论就没有证据模板，强度只能临场发挥。',
+    );
+  } else {
+    ok(`必答句清单覆盖了覆盖表的全部 ${CANONICAL_DIMENSIONS.length} 个维度（共 ${bullets.length} 句）`);
+  }
+}
+
+// ---------- 10. 七维速查表不得复述维度细则里的分类措辞 ----------
+{
+  // 这些词是 dimensions.md 的判断分档。速查表只留「要回答的问题」。
+  // dimensions.md 以后新增分类时，把新词加进这个列表。
+  const CLASSIFY_TERMS = ['协议固定值', '业务政策值'];
+  const pick = (lines) => lines.filter((l) => /^\|\s*[1-7]\s*\|/.test(l));
+  const offenders = [];
+  for (const [f, lines] of [['SKILL.md', read('SKILL.md')], ['README.md', read('README.md')]]) {
+    for (const l of pick(lines)) {
+      for (const t of CLASSIFY_TERMS) {
+        if (l.includes(t)) offenders.push(`${f}: 速查表行里出现「${t}」`);
+      }
+    }
+  }
+  if (offenders.length) {
+    fail(
+      `七维速查表复述了维度细则的分类措辞：\n    ${[...new Set(offenders)].join('\n    ')}\n` +
+        '速查表只留「要回答的问题」，分类与「不算」边界只在 references/dimensions.md 里定——' +
+        '写两份必然漂移，漂移的那份会让这一维被系统性漏报。',
+    );
+  } else {
+    ok('七维速查表没有复述维度细则的分类措辞（判据单一真相源在 dimensions.md）');
+  }
+}
+
+// ---------- 11. playbooks.md 不得复用「已查（见 X）」这个 token ----------
+{
+  const pb = read('references/playbooks.md');
+  const bad = pb.filter((l) => l.includes('已查（见'));
+  if (bad.length) {
+    fail(
+      'references/playbooks.md 里出现了「已查（见 X）」：\n    ' + bad.join('\n    ') +
+        '\n这个 token 的含义是「本维的结论被归到了别的维度」，且只出现在结果格。' +
+        'playbook 覆盖的条目，结果格写「无发现」，覆盖说明写在「查了什么」列。',
+    );
+  } else {
+    ok('playbooks.md 没有复用「已查（见 X）」token');
+  }
+}
+
+// ---------- 12/13. 示例自身自洽：结论计数、覆盖表声明、正文条目要对得上 ----------
+{
+  const fencedBlocks = (lines) => {
+    const blocks = [];
+    let cur = null;
+    for (const l of lines) {
+      if (/^\s*```/.test(l)) {
+        if (cur === null) cur = [];
+        else {
+          blocks.push(cur.join('\n'));
+          cur = null;
+        }
+        continue;
+      }
+      if (cur !== null) cur.push(l);
+    }
+    return blocks;
+  };
+  const COUNT_RE = /P0 (\d+)、P1 (\d+)、P2 (\d+)、P3 (\d+)、待拍板 (\d+)/;
+  const isExample = (b) => b.includes('| 维度 | 结果 | 查了什么 |') && COUNT_RE.test(b);
+
+  const readmeBlocks = fencedBlocks(read('README.md')).filter(isExample);
+  const tplBlocks = fencedBlocks(read('references/output-template.md')).filter(isExample);
+  let bad = 0;
+
+  if (readmeBlocks.length !== 1) {
+    fail(`README.md 里带维度覆盖表与结论计数的示例块应恰好 1 个，实际 ${readmeBlocks.length} 个`);
+    bad += 1;
+  }
+  if (tplBlocks.length !== 1) {
+    fail(`output-template.md 里带维度覆盖表与结论计数的示例块应恰好 1 个，实际 ${tplBlocks.length} 个`);
+    bad += 1;
+  }
+
+  if (readmeBlocks.length === 1 && tplBlocks.length === 1) {
+    const a = readmeBlocks[0].match(COUNT_RE);
+    const b = tplBlocks[0].match(COUNT_RE);
+    if (a[0] !== b[0]) {
+      fail(
+        'README 与 output-template 的示例是同一个场景，结论计数却不同：\n' +
+          `    README:          ${a[0]}\n    output-template: ${b[0]}\n` +
+          '两份拷贝会各漂各的——改一处不改另一处，示例自己就自相矛盾了。',
+      );
+      bad += 1;
+    } else {
+      ok(`README 与 output-template 的示例结论计数一致：${a[0]}`);
+    }
+
+    // 覆盖表声明的「n 条（级别）」必须在正文里数得出来
+    const block = tplBlocks[0];
+    if (block.includes('...') || block.includes('…')) {
+      ok('示例块里有省略号，跳过「覆盖表声明 ↔ 正文条目」逐行核对');
+    } else {
+      const rows = block.split('\n').filter((l) => /^\|\s*[^-|\s][^|]*\|/.test(l) && /\|\s*\d+ 条（.+）\s*\|/.test(l));
+      const missing = [];
+      for (const r of rows) {
+        const cells = r.split('|').map((c) => c.trim());
+        const dim = cells[1];
+        const m = cells[2].match(/^(\d+) 条（(.+)）$/);
+        if (!m) continue;
+        const [, n, level] = m;
+        const tag = `[${level}][${dim}]`;
+        const count = block.split(tag).length - 1;
+        if (count < Number(n)) {
+          missing.push(`${dim} 声明 ${n} 条（${level}），正文里只找到 ${count} 处 ${tag}`);
+        }
+      }
+      if (missing.length) {
+        fail(
+          `示例的覆盖表与正文对不上：\n    ${missing.join('\n    ')}\n` +
+            '「结论里写的每个数字都要在正文里数得出来」——示例自己得先做到。',
+        );
+        bad += 1;
+      } else {
+        ok(`示例的覆盖表声明与正文条目对得上（${rows.length} 行声明了条目数）`);
+      }
+    }
+  }
+  if (!bad) {
+    ok('两个示例块的结论计数与覆盖表声明都自洽');
+  }
+}
+
+// ---------- 14. 结论档（可以合 / 改完再合 / 方向先定）在三处必须一致 ----------
+{
+  const VERDICTS = ['可以合', '改完再合', '方向先定'];
+  const skill = read('SKILL.md');
+  const skillLine = skill.find((l) => l.includes('总体结论（'));
+  const tplLine = read('references/output-template.md').find((l) => l.includes('结论：**可以合 / 改完再合'));
+  const desc = frontmatterBlock(skill, 'description');
+  const offenders = [];
+  if (!skillLine) {
+    offenders.push('SKILL.md 里找不到「总体结论（…）」那一行');
+  } else {
+    for (const v of VERDICTS) {
+      if (!skillLine.includes(v)) continue;
+      if (!tplLine || !tplLine.includes(v)) offenders.push(`output-template.md 的结论行没有「${v}」`);
+      if (!desc.includes(v)) offenders.push(`frontmatter.description 没有「${v}」`);
+    }
+  }
+  if (offenders.length) {
+    fail(
+      `结论档写法不一致：\n    ${offenders.join('\n    ')}\n` +
+        '三档结论在 SKILL.md / references/output-template.md / frontmatter.description 里必须是同一组——' +
+        '少一档，模型就得自己发明一档。',
+    );
+  } else {
+    ok('结论档（可以合 / 改完再合 / 方向先定）在 SKILL.md / output-template.md / description 里一致');
   }
 }
 

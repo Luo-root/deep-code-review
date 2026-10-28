@@ -1,10 +1,10 @@
 ---
 name: deep-code-review
 description: |
-  Evidence-driven code review for diffs, branches, PRs/MRs, files, modules or functions, in two
-  modes. 快模式 (merge decision): report only defects this change introduces, each with a trigger
-  and impact, compact output, a "可以合 / 改完再合" verdict. 全量模式 (design review): seven
-  dimensions (design fit, API contracts, implementation, docs, hardcoding, duplication,
+  Evidence-driven code review for diffs, branches, PRs/MRs, files, modules or functions. 快模式
+  (merge decision): report only defects this change introduces, each with a trigger and impact,
+  compact output. 全量模式 (design review): a "可以合 / 改完再合 / 方向先定" verdict over seven
+  dimensions (design, API contracts, implementation, docs, hardcoding, duplication,
   over-engineering) plus error paths, concurrency, security, compatibility, observability,
   performance, test blind spots; a refutation pass (assume the design is wrong), a scale/complexity
   scan, falsification gates; then what must be fixed, what is worth fixing, what needs a decision,
@@ -115,7 +115,7 @@ description: |
 | 2 | 方法契约 | 参数是否遗漏？缺省值是否有歧义（没传 vs 传了零值）？调用方会不会传错、漏传，或被迫绕开函数自己拼？抽象层与实现层、后端层用的类型是同一个形状吗？ |
 | 3 | 实现 | 在什么输入、状态或并发交错下会算错、漏处理、泄漏、死锁？ |
 | 4 | 文档 | 读者照着注释/README/错误信息会不会做错事？ |
-| 5 | 硬编码 | 哪个值被写死了，而它应当可变？先分清它是**协议固定值**（改了就是 bug）还是**业务政策值**（改了只是口径变了，如退款窗口、账期）？ |
+| 5 | 硬编码 | 哪个值被写死了，而它应当可变？分档判据见 `references/dimensions.md` 第 5 维。 |
 | 6 | 重复 | 同一行为是否存在第二个真相源？同一个概念是否分裂成了几条行为不一致的路径？ |
 | 7 | 过度设计 | 删掉它，今天会有什么损失？ |
 
@@ -166,7 +166,7 @@ description: |
 
 不报清单：
 
-- 纯格式、命名口味、import 顺序、主观分层偏好。
+- 纯格式、命名口味、import 顺序、主观分层偏好——**不作为缺陷报**（不进「必须修/建议修」）；命名/分包口味若要统一风格，只能进「需要你拍板」，判据见 `references/dimensions.md` 第 4 维。
 - 没有具体回归路径的「建议加测试」。
 - 基线之前就存在、且与本次改动无关的问题（见上条既有问题规则）。
 - 已被同一改动在别处处理过的问题。
@@ -190,9 +190,17 @@ description: |
 
 开头三行内给出：**范围与基线 → 总体结论（可以合 / 改完再合 / 方向先定）→ 各级数量**（计数格式：`P0 n、P1 n、P2 n、P3 n、待拍板 n`；没有基线时范围写成「范围：`<路径>`（无基线，全量体检）」）。**结论里写的每个数字都要在正文里数得出来。**
 
+**三档结论各自什么时候用**：
+
+- **可以合**——没有 P0–P2，也没有待拍板项。
+- **改完再合**——有 P0/P1/P2 要修，修完即可合。
+- **方向先定**——存在必须由你拍板的**方向性取舍**（接口形状、模块边界、数据模型这类一改就牵动多处的决策），它没定下来时，改哪条 finding 都没意义。
+
+**待拍板项存在不等于就给「方向先定」**：只有拍板的是方向性取舍时才用这一档，其余拍板项仍配「改完再合」。方向待定**不影响其他维度的分级**——P0/P1/P2/P3 照常报、照常计数。
+
 ### 零发现模式
 
-当**没有 P0–P2、没有待拍板项**时，**不要套七段骨架**：直接给结论（可以合）+ 1~2 句说明查了什么、没查什么。只有 P3 时同样一句话收尾，把 P3 列成一行「可选改进」——**不为一条 P3 展开整份骨架，但也不把它丢掉**。
+当**没有 P0–P2、没有待拍板项**时（也就是结论档「可以合」），**不要套七段骨架**：直接给结论（可以合）+ 1~2 句说明查了什么、没查什么。**结论行仍写各级数量**（没有 P0–P2 时写 `P0 0、P1 0、P2 0、P3 n、待拍板 0`）。只有 P3 时同样一句话收尾，把 P3 列成一行「可选改进」——**不为一条 P3 展开整份骨架，但也不把它丢掉**。
 
 ### 完整结构（七段）
 
