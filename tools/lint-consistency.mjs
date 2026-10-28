@@ -226,7 +226,6 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
         const [, level, dim, origin] = m;
         if (level === '级别' && dim === '维度') continue; // 占位符模板，不是真标签
         count += 1;
-        const [, level, dim, origin] = m;
         if (!CANONICAL_DIMENSIONS.includes(dim)) {
           offenders.push(`${f}: 维度段「${dim}」不在规范维度名里（${level}[${dim}]）`);
         }
