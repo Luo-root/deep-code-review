@@ -1,0 +1,65 @@
+# 标准答案（rule-engine 样本 · v2）
+
+`fixtures/rule-engine/` 里**刻意植入**的缺陷清单。这份文件**不要给被测模型看**。
+
+这个样本专门测**算法/复杂度**与**架构/设计语义**两类问题——tiny-shop 样本里没有这两种形态，所以单独一套标准答案、单独一轮评测。条目编号用 `R×`，与 tiny-shop 的 `G×` 互不干扰。
+
+样本很小（约 370 行 Go），正常一轮就能读全——漏报不能用「没读完」解释。
+
+## 校正记录（v1 → v2，2026-10-28）
+
+v2 由首轮两轮评测的实测结果反推校正。**每条校正都附了依据**，可以直接复核。
+
+| # | v1 | v2 | 依据 |
+|---|---|---|---|
+| 1 | R2 `DuplicateLines` O(n²) 在「应当报出」，P2 | 移入「不该报」 | README 写明一次请求最多 200 个商品行。实测 200 行 → 19,900 次比较 ≈ **0.5 ms**；平方级在这个上限内不可观测。B 轮明确判定「O(C²) 本身不是问题」并给出实测数字。**原 GT 把「复杂度形状」当成了「规模后果」**——这正是 v2 要校准的东西。`DuplicateLines` 的真问题在语义（返回配对数而不是去重集合），那是 GT 之外的另一条 |
+| 2 | R4 `discountFor` 重建索引，P2 | 级别改 **P1** | README 上限（200 条规则 × 200 行购物车）下单请求实测 **877 ms / 250 MB 分配**。按 skill 自己写的分级校准「现实规模下就拖垮 → P1」，P2 判轻了 |
+| 3 | R5 `Apply`/`ApplyChecked` 语义分裂，P1 缺陷 | 级别改 **拍板**，并拆出 R8 / R9 / R10 | 两条路径的差异**已被 godoc 明说**：`Apply` 是 "fast path"（跳过 + 回写购物车）、`ApplyChecked` 是 "safe path"（返回 `ErrUnknownSKU` + 不改购物车）。按 `references/dimensions.md` 第 6 维「上层注释已承认差异 = 已知取舍 → 进拍板，不是缺陷」，R5 的主体应是拍板项。但**两条路径各自的后果**里，有两条不在 godoc 覆盖范围内且确实有害——拆成 R8、R9；两份定价循环的代码重复拆成 R10 |
+| 4 | v1 无此条 | 新增 R7 `New` 不拷贝入参 | `Engine` 的 godoc 写着「The rule set is fixed when the engine is built; ... an Engine may be shared by concurrent callers」，但 `New` 只是 `&Engine{rules: rules}`——直接持有调用方的切片。**承诺的「固定」没有落地**：调用方改一下 `rules[0].Discount`，引擎立刻按新值结算；并发改则 data race。v1 把这条列进了「不该报」（理由「没有具体触发路径」）——**这个判断是错的**，触发路径是有的 |
+| 5 | R1 无边界注 | 补边界注 | `reachable` 的 godoc 明写「a dependency shared by several rules appears once per path that reaches it」——**按路径展开是已声明的行为**。所以 R1 的成立点是**规模后果**（在 README 写的深度上限下会怎样），不是「重复展开」这件事本身 |
+
+**分母**：v2 的「应当报出」共 **9 条**（R1、R3、R4、R5、R6、R7、R8、R9、R10）+ C1。R3、R4、R5、R6 的编号沿用 v1（v1 的 R2 已移出）。
+
+## 应当报出
+
+| # | 位置 | 维度 | 级别 | 问题 | 触发路径 / 规模 | 可接受的变体 |
+|---|---|---|---|---|---|---|
+| R1 | `internal/promo/engine.go:151` `reachable`、`:162` `reachableFrom` | 规模与复杂度 | P1 | 依赖图里有**共享节点**时，同一条依赖按**路径**反复展开：`reachableFrom` 每遇到一条 `Depends` 就递归展开整棵子树，没有已访问集合、没有记忆化。依赖图呈菱形时展开条数按 2^depth 增长，呈阶梯形（每档依赖前两档）时按 Fibonacci 增长。另外**没有环检测**：规则集里出现环（`a` 依赖 `b`、`b` 依赖 `a`）时无限递归 → `fatal error: stack overflow`，进程不可恢复地崩掉 | README 写明依赖链最深 50 层。实测菱形图 depth 16 → 524,249 条 / 181 ms；depth 20 → 8,388,561 条 / **3.53 s**；阶梯图 depth 24 → 317,784 条、**同一个规则 ID 出现 121,392 次**（规则集本身只有 24 条规则） | 指出「同一依赖被重复展开 / 没有已访问集合 / 共享依赖下指数增长」任一，**并**给出规模关系或实测数字。**只说「按路径展开、可能有重复」不构成命中**——godoc 已声明该行为，成立点是它在 README 写的深度上限下的规模后果。**环导致栈溢出**单独命中也算 |
+| R3 | `internal/promo/engine.go:176` `resolve`、`:188` `copyChain` | 规模与复杂度 / 过度设计 | P2 | `resolve` 每层都把子链**完整深拷贝**一份（`copyChain`）再塞进 `Dependencies`。深度 d 的链要留 O(d²) 份节点。而且这份拷贝是**纯冗余**：`child` 刚由 `resolve` 现场造出来、随即被丢弃，除了 `copyChain` 这一份没人持有它 | 深度 25 → 33.6 KB；50 → 137.2 KB；100 → 554.4 KB；200 → 2,228,800 B（深度翻倍，分配 ×4）。冗余视角：阶梯图 depth=24 时 `Explain` 耗时 110.93 ms，去掉拷贝后 8.11 ms（**拷贝占 92.7%**），分配 266.6 MB | 指出「每层深拷贝完整链 / 内存随深度平方增长 / 应该边走边累加」任一；**或**指出「这份拷贝没有任何存在理由，`child` 随即被丢弃」（过度设计视角）。两种都要**并**给出分配量或规模 |
+| R4 | `internal/promo/engine.go:115` `discountFor`，被 `:67` `Apply` 的内层循环调用 | 规模与复杂度 | P1 | `discountFor` 每次被调用都重新 `make` 一张 map 并把全部规则的 SKU 填进去，然后用这张表查**一个** key。`Apply` 的内层循环每覆盖一行就调一次 → 索引被反复重建，单次 `Apply` 退化成 O(规则数 × 行数 × 规则-SKU 总数) | 100 规则 / 200 行 → 索引重建 200 次，1.08 ms / 2.01 MB。README 上限（200 规则 × 12 SKU × 200 行）下单请求实测 **877 ms / 250.6 MB 分配** | 指出「索引在函数内部重建 / 应该建一次复用 / 查一个 key 却重建全表」任一，**并**指出它在循环里。**只说「每次重建 map」而没指出调用点在循环里，记 0.5** |
+| R5 | `internal/promo/engine.go:56` `Apply` 与 `:80` `ApplyChecked` | 重复（语义分裂） | **拍板** | 同一个业务动作（给购物车套用促销规则）有两条导出路径，且**行为不一致**：(a) `Apply` 把折后单价**就地写回调用方的购物车**，`ApplyChecked` 不改；(b) 规则引用购物车没有的 SKU 时，`Apply` **静默跳过**该规则，`ApplyChecked` 直接返回 `ErrUnknownSKU`。两条路径的差异**已被 godoc 承认**（"fast path" / "safe path"），但**调用方凭什么该走哪条没有任何判据**；统一抽象 `promo.Pricer` 只声明了 `Apply`（宽松那条），等于把「静默丢规则 + 原地改写购物车」接给了所有统一调用方 | 同一个购物车分别传给两个入口：折后单价一个被改一个没被改；含未知 SKU 的规则集一个静默少算一条、一个直接报错。拿 `promo.Pricer` 接后端时，接上的必然是 `Apply` | 指出「同一动作两条路径 / 一个改一个不改 / 一个静默跳过一个报错」任一，**并**指出具体差异。**作为拍板项必须给两条路 + 建议 + 要你定什么**（例如「合并成一个动作，差异变参数」vs「保留两条但把差异显式化」）。判成 P 级缺陷 → 归类按 rubric「GT 判拍板而报告判缺陷」处理 |
+| R6 | `internal/promo/rule.go:44` `Pricer` 与 `internal/promo/sqlstore/store.go:42` `Apply` | 方法契约（跨层形状） | P2 | `promo.Pricer` 要求 `Apply(ctx, promo.ApplyRequest) (*promo.Result, error)`；`sqlstore.Engine.Apply` 是 `Apply(ctx, sqlstore.Request) (*sqlstore.Outcome, error)`——请求类型字段名不同（`Cart` vs `Items`）、多一个 `RuleIDs`、返回类型不同（`Result{Total, Applied}` vs `Outcome{Total, Lines}`）。`sqlstore.Engine` 因此**不满足 `promo.Pricer`**，换后端要改调用代码。**这不是编译错误**（各写各的具体类型完全能编过，裂缝只在换后端那天显形） | 想把定价后端从内存换成数据库：持有 `promo.Pricer` 的调用方装不上 `sqlstore.Engine`；写 `var _ promo.Pricer = (*sqlstore.Engine)(nil)` 编译失败 | **并排列出两个签名**并指出具体差异（字段名 / 字段数 / 返回类型任一）。只说「两个后端接口不一样」记 0.5 |
+| R7 | `internal/promo/engine.go:14` `New` | 方法契约 / 文档承诺 | P2 | `New` 直接存下调用方传进来的 `[]Rule`（`Rule.SKUs` / `Rule.Depends` 同样是共享的），既不拷贝也不说明。而 `Engine` 的 godoc 明写「**The rule set is fixed when the engine is built**; pricing a cart never changes it, so **an Engine may be shared by concurrent callers**」——承诺的「固定」建立在一句调用方不会改的君子协定上 | 构造后把 `rules[0].Discount` 改成 999，引擎立刻按 999 结算（单价 1000 → 结算 1 分）。一个 goroutine 改 `rules`、另一个调 `Apply` → `-race` 报 `WARNING: DATA RACE` | 指出「`New` 没有拷贝入参」**并**引出「文档承诺的『固定』没有落地」或具体触发路径（改切片 → 金额错 / 并发改 → data race）。只说「建议 `New` 里拷一份」但没指出承诺与触发 → 记 0.5 |
+| R8 | `internal/promo/engine.go:127` `hasUnknownSKU`，被 `:84` `ApplyChecked` 调用 | 实现 / 错误语义 | P1 | `hasUnknownSKU` 判的是「购物车没有某条规则要求的 SKU」——而那正是「这条规则不生效」的**正常状态**，不是错误。`ApplyChecked` 因此在**任何非空规则集**下必然返回 `ErrUnknownSKU`：「safe path」永远不可能成功，线上实际只剩「静默跳过规则」的 `Apply` 在跑 | 20 条规则（每条 6 个 SKU）+ 一行购物车，该购物车其实一条规则都没触发 → 仍然返回 `ErrUnknownSKU`（规则实际触发数 0 of 20）。既有测试 `TestApplyCheckedRejectsUnknownSKU` 正是把这个行为断言成了预期 | 指出「`ApplyChecked` 在任何非空规则集下必然失败 / `hasUnknownSKU` 把『规则不生效』当成了错误 / safe path 永不成功」任一，**并**给出触发场景或实测 |
+| R9 | `internal/promo/engine.go:56` `Apply` | 实现 | P1 | `Apply` 把折后单价**就地写回调用方的购物车**（`req.Cart[i].Price -= off`），而 godoc 只说「written back into the cart」，**没说它不可重入**。同一个 `[]Item` 调用两次 `Apply`（重试、超时后重算、算完再确认一次）会**扣两次钱** | 同一个 `[]Item` 连续调两次：第一次 `total=400`（行单价 500→400），第二次 `total=300`（行单价再降 100）。结果取决于调用历史，不取决于入参 | 指出「`Apply` 就地改写调用方的购物车 / 不可重入 / 重复调用会重复扣减 / 结果取决于调用历史」任一，**并**给出触发路径或实测数字 |
+| R10 | `internal/promo/engine.go:59-72` `Apply` 与 `:83-94` `ApplyChecked` | 重复（真重复） | P2 | 两个方法的定价循环体是复制关系。折扣口径、依赖顺序、SKU 匹配三条需求，任何一条变化都必须同时改两处——改漏一处就是两个入口给出不同金额 | 逐行可对：`Apply` 循环写回购物车、`ApplyChecked` 循环只算账，其余结构一致 | 指出「两份几乎逐行相同的定价循环 / 同一逻辑两处实现」，**并**指出至少一条「哪条需求变了这两处必须一起改」。只说「有重复代码」记 0.5 |
+
+## 应当明确说「查过没问题」
+
+| # | 位置 | 事实 | 判定标准 |
+|---|---|---|---|
+| C1 | `internal/promo/engine.go:9` `Engine` | `Engine.rules` 只读；`Apply` / `ApplyChecked` / `Plan` / `Explain` 都不改引擎状态——`Apply` 改的是**调用方传入的购物车切片**（这一点本身是 R9，不影响并发安全结论）。多个 goroutine 共用同一个 `*Engine` 并发定价，不会互相影响 | 好的报告会写明「并发这块查过没问题」并给依据（rules 只读 + 改的是入参切片）。**凭空编造竞态算误报**；把 R9 的「调用方改自己传入的切片」当成引擎竞态也算误报 |
+
+## 不该报
+
+| 候选 | 为什么不报 |
+|---|---|
+| `internal/promo/engine.go:217` `cartTotal` 每次都遍历一遍购物车 | 单次线性遍历，购物车最多 200 行。这不是复杂度缺陷 |
+| `Engine` 用指针、`New` 返回 `*Engine` | 正常写法；而且 `Engine{}` 零值可用（`rules` 为 nil 时 `Apply` 照样返回结果），不存在「零值不可用」 |
+| `internal/promo/rule.go:55` `Result.Applied` 暴露规则 ID 列表 | 这是对外契约的一部分，不是过度设计 |
+| `ErrUnknownSKU` / `ErrUnknownRule` 用 `errors.New` 哨兵 | 正常做法，不该报成错误语义问题 |
+| **`internal/promo/engine.go:99` `DuplicateLines` 的 O(C²) 两两比较** | **v2 移入（原 R2）**。README 上限 200 行 → 19,900 次比较，实测 **0.5 ms**——平方级在这个上限内不可观测，不构成规模缺陷。**「两两比较、应该建 map」这个形状本身不是一个缺陷**；它的真问题在语义（返回配对数而不是去重集合），那是 GT 之外的另一条缺陷，见 baseline 的「GT 之外的 14 条真缺陷」 |
+
+## 计分要点
+
+- **规模类条目（R1、R3、R4）没有触发路径**，按「规模关系 + 实测」判：说不出 N 是多少、或给不出任何数字的，最多记 0.5。这一条是为了区分「真的看出了复杂度问题」与「泛泛地说这里可能慢」。
+- **R1 的成立点是规模后果，不是「重复展开」这件事**——`reachable` 的 godoc 已经声明了按路径展开。只陈述该行为、没有落到 README 写的深度/规模上限上会怎样，最多记 0.5。
+- **R3 的两种形态都算数**：规模视角（O(d²) 内存、分配量）与过度设计视角（`child` 随即丢弃、删掉零损失）。两种都要配数字。
+- **R1 与 R3 是两个不同根因**（重复展开 vs 深拷贝），都发生在依赖图上，分开计。R1 的前提是依赖图**有共享节点**（或成环）；R3 的前提是链**够深**。
+- **R4 的成立前提是它在热路径上**：只说「这里每次重建 map」而没指出调用点在循环里，记 0.5。
+- **R5 是拍板项**：必须给「两条路 + 建议 + 要你定什么」才算表达满分；判成 P 级缺陷不是错，但归类按 rubric「GT 判拍板而报告判缺陷 → 0」处理。
+- **R8、R9 是缺陷项**：说对了实质但归进「需要你拍板」，命中算 1、归类算 0.5（rubric「GT 判缺陷而报告判拍板」）。
+- **R7 要引出承诺**：只说「建议 `New` 拷一份」而没指出 godoc 承诺的「固定」没落地，记 0.5。
+- **R10 要指明哪条需求必须两处一起改**，否则记 0.5。
+- **R6 要并排列出两个签名**并指出具体差异才算 1；只说「两个后端接口不一样」记 0.5。
+- **快模式（A 轮）本就不跑规模扫描与反驳**，R1、R3、R4、R5 在 A 轮不该拿满分——判分时按该轮的模式契约算（见 `evals/rubric.md`）。

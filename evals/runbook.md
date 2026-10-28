@@ -1,23 +1,34 @@
 # 操作手册：怎么跑一次评测
 
+## 两个样本，两套标准答案
+
+| 样本 | 测什么 | 标准答案 | 跑哪几轮 |
+|---|---|---|---|
+| `evals/fixtures/tiny-shop` | 契约、文档、错误路径、并发、兼容性——通用面 | `ground-truth.md`（G1–G25） | A + B + C |
+| `evals/fixtures/rule-engine` | **算法/复杂度**与**架构/设计语义**——反驳与规模扫描 | `ground-truth-rule-engine.md`（R1–R10 里的 9 条 + C1） | B + C |
+
+**为什么分两个样本**：tiny-shop 是 150 行的结算模块，里面**没有指数级回溯，也没有分裂成两条路径的动作**——它测不出新能力。两个样本分开跑，分数分开记，才能同时回答「旧的没退化」和「新的生效了」。
+
 ## 准备
 
 ```bash
 # 把样本复制到临时目录，别在仓库里改
 cp -r evals/fixtures/tiny-shop /tmp/dcr-eval
+cp -r evals/fixtures/rule-engine /tmp/dcr-eval-rule
 ```
 
 Windows PowerShell：
 
 ```powershell
 Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval
+Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule
 ```
 
-> **不要把 `ground-truth.md` / `rubric.md` 放进被审目录**——被测模型看到标准答案，这次评测就废了。
+> **不要把 `ground-truth.md` / `ground-truth-rule-engine.md` / `rubric.md` 放进被审目录**——被测模型看到标准答案，这次评测就废了。
 >
-> **样本副本要做中性化**：仓库里 `evals/fixtures/tiny-shop/README.md` 写着「刻意植入缺陷」，
+> **样本副本要做中性化**：仓库里两个样本的 `README.md` 都写着「刻意植入缺陷」，
 > 那句话等于给被测模型透题。复制到隔离目录后，把 README 换成**中性描述版**
-> （去掉缺陷披露、去掉「怎么用」段），其余 4 个文件**逐字节**复制，SHA256 必须与仓库一致。
+> （去掉缺陷披露、去掉「怎么用」段），其余文件**逐字节**复制，SHA256 必须与仓库一致。
 >
 > **副作用**：报告里引用 README 的行号会比仓库 fixture 差 1–2 行。
 > 标准答案只引用 `.go` 文件行号，不受影响；评分时**不要**因为 README 行号差一位就扣「表达质量」。
@@ -40,6 +51,19 @@ Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval
 
 A 轮验的是**快模式本身**：合并判定必须由这个 skill 直接给出，形态是紧凑列表 + 一句结论，不依赖任何其他工具。
 
+### rule-engine 样本只跑 B + C
+
+新能力（**反驳**与**规模扫描**）只在全量模式跑——它们找的是设计与算法层面的问题，不是「这次改动有没有坏」。所以 rule-engine 样本跑两轮：
+
+| 轮次 | 问法 | 期望 |
+|---|---|---|
+| B | `用 deep-code-review 按七维审 /tmp/dcr-eval-rule` | 全量模式：七维 + **反驳** + **规模扫描** + 六段式 + 覆盖表 |
+| C | `给 /tmp/dcr-eval-rule/internal/promo 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 R1/R3/R4/R5/R6 这些「规模 + 语义」条目 |
+
+**规模类条目在报告里的形态**：给「规模 N → 开销」的关系与实测数字，不是「输入 → 错误结果」那种触发路径。报告没给数字的，按 `ground-truth-rule-engine.md` 的计分要点最多记 0.5。
+
+**A 轮不跑 rule-engine**：快模式契约里没有这两遍，跑它只能验出「快模式没乱报」，收益低。
+
 ## 记录
 
 把每轮的输出原样存下来（不要摘要），再对照 `ground-truth.md` 打分，
@@ -50,14 +74,16 @@ A 轮验的是**快模式本身**：合并判定必须由这个 skill 直接给�
 - **别把 ground truth 喂给模型**。哪怕是「提示一下重点看哪里」也会毁掉结果。
 - **一轮不够**。同一 skill 两轮之间有波动是已知的（README 的「评测」一节就写了）。
   想看稳定性就跑 3 轮，取中位数。
-- **样本很小**。约 150 行，读得完。漏报不能用「范围太大没读完」解释——
+- **样本都很小**。tiny-shop 约 200 行、rule-engine 约 370 行，都读得完。漏报不能用「范围太大没读完」解释——
   如果模型说「未覆盖」，那是它自己的选择，要记下来。
 - **别把历次评测的原始输出放在样本目录旁边**。那些原始输出本身就是「答案」——
   上一轮的评审全文躺在样本目录旁边时，有一轮直接把上一轮结论读进去了，那一轮作废重跑。
 - **原始输出目录与样本目录不要有父子关系**，也不要放在同一个父目录下——
   被测上下文有可能往父目录翻，命中任何一份历史评审都会污染这一轮。
+- **两个样本的隔离目录也要分开**，理由同上：rule-engine 的标准答案和 tiny-shop 的不能互相可见。
 - **不是每次都要跑全三种问法**。改 skill 正文时跑 B+C；
   只改 description 时重点跑 A（路由）；改输出契约时重点看 C（结构）。
+  涉及新能力（反驳 / 规模扫描）的改动，**必须**跑 rule-engine 的 B+C——tiny-shop 测不出它。
 
 ## 什么时候必须跑
 
@@ -68,13 +94,14 @@ A 轮验的是**快模式本身**：合并判定必须由这个 skill 直接给�
 
 ## 归档
 
-把每轮的输出原样存下来（不要摘要），再对照 `ground-truth.md` 打分，
+把每轮的输出原样存下来（不要摘要），再对照对应的标准答案打分
+（tiny-shop → `ground-truth.md`，rule-engine → `ground-truth-rule-engine.md`），
 按 `rubric.md` 的格式写出评分表。
 
 **存哪**：
 
-- 原始输出（每轮一份全文）**不入版本控制**，放仓外（例如 `scratchpads\dcr-eval\runs\round-{A,B,C}.md`）。
+- 原始输出（每轮一份全文）**不入版本控制**，放仓外（例如 `scratchpads\dcr-eval-archive\round-{A,B,C}-v4.md`）。
 - 评分表入版本控制，追加到 `evals/baseline.md`；跑完一版就追加一节，**不要覆盖旧记录**——旧记录是「当时按当时的标准答案跑出来的结果」，属历史事实。
-- 改了 `ground-truth.md` 或 `rubric.md` 之后，旧分数与新分数**不可比**，必须在记录里写明，并重跑一轮拿新口径的基线。
+- 改了 `ground-truth.md` / `ground-truth-rule-engine.md` 或 `rubric.md` 之后，旧分数与新分数**不可比**，必须在记录里写明，并重跑一轮拿新口径的基线。
 
 **贴到 issue**：如果这次评测是为了验证某个改动，把评分表贴到那个改动的 issue 或 PR 评论里。这样每个 PR 都能看到「这个改动让审查变好还是变坏」。
