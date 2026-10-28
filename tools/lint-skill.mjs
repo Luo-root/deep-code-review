@@ -17,6 +17,11 @@ import { join, basename, resolve } from 'node:path';
 const FORBIDDEN_FRONTMATTER_KEYS = ['allowed-tools', 'license', 'model'];
 const MAX_BODY_LINES = 500;
 
+// 成品里不出现相对表述：提一次「内置」，这个 skill 就始终是相对于别的东西定义的。
+// 这条规矩以前靠人工 grep 守，容易漏——机器化之后它就退不回去了。
+const RELATIVE_PHRASES = ['内置', '别的工具', '第二个工具'];
+const RELATIVE_PHRASE_SCOPE = ['SKILL.md', 'README.md', 'references', 'evals'];
+
 let errors = 0;
 let warnings = 0;
 
@@ -185,6 +190,43 @@ if (existsSync(refDir)) {
       fail(`references/${f} contains CRLF line endings`);
     }
   }
+}
+
+// --- 相对表述 ---
+// skill 必须自述能力，不靠对比定义。跨工具的选型说明属于「给人看的」，但也不该用
+// 「内置 X」这种措辞——正确做法是让本 skill 覆盖那件事，而不是比较谁更强。
+function collectFiles(rel) {
+  const abs = join(dir, rel);
+  if (!existsSync(abs)) return [];
+  return readdirSync(abs)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => join(abs, f));
+}
+
+const phraseTargets = [
+  ...(existsSync(join(dir, 'SKILL.md')) ? [join(dir, 'SKILL.md')] : []),
+  ...(existsSync(join(dir, 'README.md')) ? [join(dir, 'README.md')] : []),
+  ...collectFiles('references'),
+  ...collectFiles('evals'),
+];
+
+let phraseHits = 0;
+for (const f of phraseTargets) {
+  const lines = readText(f).split('\n');
+  lines.forEach((line, i) => {
+    for (const phrase of RELATIVE_PHRASES) {
+      if (line.includes(phrase)) {
+        fail(
+          `${f.replace(dir + '/', '')}:${i + 1} 含相对表述「${phrase}」。` +
+            '成品要自述能力，不要靠与别的东西比较来定义——改写成本 skill 自己的说法。',
+        );
+        phraseHits += 1;
+      }
+    }
+  });
+}
+if (phraseHits === 0) {
+  ok(`no relative phrasing (${RELATIVE_PHRASES.join(' / ')})`);
 }
 
 console.log('');
