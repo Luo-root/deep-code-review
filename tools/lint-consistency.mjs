@@ -111,6 +111,11 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     let bad = 0;
     for (const [i, t] of tables.entries()) {
       const names = t.map((l) => l.split('|')[1].trim());
+      // 标了「…」的是省略版（例如零发现示例里的那张），不要求 15 行齐全
+      if (names.some((n) => n.includes('…'))) {
+        ok(`第 ${i + 1} 张覆盖表是显式省略版（标了「…」），跳过 15 行完整性检查`);
+        continue;
+      }
       const s = new Set(names);
       const missing = CANONICAL_DIMENSIONS.filter((d) => !s.has(d));
       const extra = [...s].filter((d) => !CANONICAL_DIMENSIONS.includes(d));
@@ -204,15 +209,16 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
   }
 }
 
-// ---------- 6. finding 标签形态：维度段必须是规范维度名，第三段只能是引入方式 ----------
+// ---------- 6. finding 标签形态：三段齐全，级别段与维度段都是规范值 ----------
 {
-  const files = ['SKILL.md', 'references/regression-review.md', 'references/output-template.md'];
+  const files = ['SKILL.md', 'README.md', 'references/regression-review.md', 'references/output-template.md'];
   const ORIGIN = ['本次引入', '既有'];
+  const LEVELS = ['P0', 'P1', 'P2', 'P3', '待拍板'];
   const offenders = [];
   let count = 0;
   for (const f of files) {
     for (const l of read(f)) {
-      const re = /\[(P[0-3])\]\[([^\]]+)\](?:\[([^\]]+)\])?/g;
+      const re = /\[(P[0-3]|待拍板)\]\[([^\]]+)\](?:\[([^\]]+)\])?/g;
       let m;
       while ((m = re.exec(l)) !== null) {
         count += 1;
@@ -220,11 +226,13 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
         if (!CANONICAL_DIMENSIONS.includes(dim)) {
           offenders.push(`${f}: 维度段「${dim}」不在规范维度名里（${level}[${dim}]）`);
         }
-        if (origin !== undefined && !ORIGIN.includes(origin)) {
-          offenders.push(`${f}: 第三段「${origin}」不是引入方式（应为 ${ORIGIN.join(' / ')}）`);
+        if (!LEVELS.includes(level)) {
+          offenders.push(`${f}: 级别段「${level}」不合法（应为 ${LEVELS.join(' / ')}）`);
         }
-        if (f === 'references/regression-review.md' && origin === undefined) {
-          offenders.push(`${f}: 快模式标签「${level}[${dim}]」缺引入方式段`);
+        if (origin === undefined) {
+          offenders.push(`${f}: 标签「${level}[${dim}]」缺引入方式段（形态固定三段）`);
+        } else if (!ORIGIN.includes(origin)) {
+          offenders.push(`${f}: 第三段「${origin}」不是引入方式（应为 ${ORIGIN.join(' / ')}）`);
         }
       }
     }
@@ -232,7 +240,7 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
   if (offenders.length) {
     fail(`finding 标签形态不一致：\n    ${[...new Set(offenders)].join('\n    ')}`);
   } else {
-    ok(`finding 标签形态一致（${count} 处标签：维度段都是规范维度名，第三段都是引入方式）`);
+    ok(`finding 标签形态一致（${count} 处标签：级别段合法、维度段都是规范维度名、第三段都是引入方式）`);
   }
 }
 
@@ -386,7 +394,9 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     return blocks;
   };
   const COUNT_RE = /P0 (\d+)、P1 (\d+)、P2 (\d+)、P3 (\d+)、待拍板 (\d+)/;
-  const isExample = (b) => b.includes('| 维度 | 结果 | 查了什么 |') && COUNT_RE.test(b);
+  // 完整示例 = 有覆盖表 + 有结论计数 + 有「必须修」段（骨架与零发现示例都不算）
+  const isExample = (b) =>
+    b.includes('| 维度 | 结果 | 查了什么 |') && COUNT_RE.test(b) && /##\s*必须修/.test(b);
 
   const readmeBlocks = fencedBlocks(read('README.md')).filter(isExample);
   const tplBlocks = fencedBlocks(read('references/output-template.md')).filter(isExample);
@@ -475,6 +485,129 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     );
   } else {
     ok('结论档（可以合 / 改完再合 / 方向先定）在 SKILL.md / output-template.md / description 里一致');
+  }
+}
+
+// ---------- 15. playbook 的覆盖声明必须与它的条目对得上 ----------
+{
+  const pb = read('references/playbooks.md');
+  const sections = [];
+  let cur = null;
+  for (const l of pb) {
+    if (/^##\s/.test(l)) {
+      cur = { name: l.replace(/^##\s*/, '').trim(), declared: [], items: [] };
+      sections.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    if (/^覆盖扩展维度：/.test(l)) {
+      const body = l.replace(/^覆盖扩展维度：/, '').replace(/。\s*$/, '');
+      // 只在括号外按「、」切：括号里的补充说明不是维度名
+      let depth = 0;
+      let buf = '';
+      const parts = [];
+      for (const ch of body) {
+        if (ch === '（') depth += 1;
+        if (ch === '）') depth -= 1;
+        if (ch === '、' && depth === 0) {
+          parts.push(buf);
+          buf = '';
+          continue;
+        }
+        buf += ch;
+      }
+      parts.push(buf);
+      for (const part of parts) {
+        const dim = part.split('（')[0].trim();
+        if (dim) cur.declared.push(dim);
+      }
+      continue;
+    }
+    const m = l.match(/^- \*\*[^*]+\*\*（([^）]+)）/);
+    if (m) cur.items.push(m[1]);
+  }
+  const offenders = [];
+  for (const s of sections) {
+    for (const d of s.declared) {
+      if (!s.items.some((it) => it.includes(d))) {
+        offenders.push(`${s.name}：声明覆盖「${d}」，但正文里没有一条标注了该维度的条目`);
+      }
+    }
+    for (const it of s.items) {
+      for (const one of it.split('/').map((x) => x.trim())) {
+        if (!CANONICAL_DIMENSIONS.includes(one)) {
+          offenders.push(`${s.name}：条目标注的「${one}」不是规范维度名`);
+        }
+      }
+    }
+  }
+  if (offenders.length) {
+    fail(
+      `playbook 的覆盖声明与条目对不上：\n    ${offenders.join('\n    ')}\n` +
+        '声明覆盖了却没有对应条目 = 覆盖表会写「无发现」，等于替一个没查过的维度背书。',
+    );
+  } else {
+    ok(`playbook 的覆盖声明与条目一致（${sections.length} 份 playbook，每条必查项都标了规范维度）`);
+  }
+}
+
+// ---------- 16. README 目录树里列出的路径必须真的存在 ----------
+{
+  const readme = read('README.md');
+  const stack = [];
+  const missing = [];
+  for (const l of readme) {
+    const m = l.match(/^((?:[│|][ ]{3}|[ ]{4})*)(?:├──|└──)[ ]+/);
+    if (!m) continue;
+    const depth = Math.floor(m[1].length / 4);
+    let name = l.slice(m[0].length);
+    const hash = name.indexOf('#');
+    if (hash >= 0) name = name.slice(0, hash);
+    name = name.trim();
+    if (!name) continue;
+    stack[depth] = (depth === 0 ? '' : stack[depth - 1] ?? '') + name;
+    stack.length = depth + 1;
+    const p = stack[depth].replace(/[/\\]+$/, '');
+    if (!p || p.includes('…')) continue;
+    if (!existsSync(join(dir, p))) missing.push(p);
+  }
+  if (missing.length) {
+    fail(`README 目录树列出了不存在的路径：\n    ${missing.join('\n    ')}\n目录树是读者判断「这个仓库有什么」的第一依据。`);
+  } else {
+    ok('README 目录树里列出的路径都存在');
+  }
+}
+
+// ---------- 17. 结论档决策表：三档齐全且优先级顺序固定 ----------
+{
+  const skill = read('SKILL.md');
+  const start = skill.findIndex((l) => l.includes('结论档按这张表选'));
+  const EXPECTED = ['方向先定', '改完再合', '可以合'];
+  if (start === -1) {
+    fail('SKILL.md 里找不到「结论档按这张表选」那一段——结论档的选取判据必须落成表，段落写法会漏掉组合。');
+  } else {
+    const rows = [];
+    let started = false;
+    for (let i = start + 1; i < skill.length; i += 1) {
+      const l = skill[i];
+      if (!started) {
+        if (!l.trim()) continue;
+        if (!l.trim().startsWith('|')) break;
+        started = true;
+      }
+      if (!l.trim().startsWith('|')) break;
+      if (/^\|\s*-{2,}/.test(l)) continue;
+      if (/^\|\s*情况\s*\|/.test(l)) continue;
+      rows.push(l);
+    }
+    const got = rows.map((r) => EXPECTED.find((v) => r.includes(v)) ?? null);
+    if (rows.length !== 3 || got.join('|') !== EXPECTED.join('|')) {
+      fail(
+        `结论档决策表应是 3 行、优先级 方向先定 → 改完再合 → 可以合，实际 ${rows.length} 行：${got.join(' → ')}`,
+      );
+    } else {
+      ok('结论档决策表 3 行齐全，优先级 方向先定 → 改完再合 → 可以合');
+    }
   }
 }
 
