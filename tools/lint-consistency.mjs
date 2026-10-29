@@ -1413,7 +1413,56 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 23. 本文件末尾才判定退出码 ----------
+// ---------- 34. 两档模式表：两处必须对「做什么」说同一件事 ----------
+// SKILL.md 与 README.md 各有一张两档模式表。此前 README 那张还写着
+// 「反驳与规模扫描只在全量模式跑」，而 SKILL.md 已经改成「类型 playbook 必查项两档都跑」——
+// 两份面向不同读者的表各说各的，读者按哪份理解，结论就相反。
+// 这里不要求逐行相同（两表的行数与措辞粒度本来就不同），只对「做什么」这一行做**关键词集合**比对。
+{
+  const SKILL = read('SKILL.md');
+  const README = read('README.md');
+  const rowOf = (lines, marker) => lines.find((l) => /^\|\s*做什么\s*\|/.test(l));
+  const a = rowOf(SKILL, 'SKILL.md');
+  const b = rowOf(README, 'README.md');
+  const bad = [];
+  if (!a) bad.push('SKILL.md 里找不到两档模式表的「做什么」行');
+  if (!b) bad.push('README.md 里找不到两档模式表的「做什么」行');
+  if (a && b) {
+    // 逐格比对：两表都是三列（表头 / 快模式 / 全量），取第 2、3 格
+    const ca = a.split('|').map((c) => c.trim());
+    const cb = b.split('|').map((c) => c.trim());
+    // 关键 token：这些词决定「这一档跑什么」，缺一个就说明两表说法不同
+    const TOKENS = [
+      { t: '类型 playbook', why: '类型 playbook 必查项跑不跑' },
+      { t: '七维', why: '七维跑不跑' },
+      { t: '规模扫描', why: '规模扫描跑不跑' },
+      { t: '反驳', why: '反驳跑不跑' },
+      { t: '证伪', why: '证伪跑不跑' },
+    ];
+    for (let col = 1; col <= 2; col += 1) {
+      for (const { t, why } of TOKENS) {
+        const inA = (ca[col] ?? '').includes(t);
+        const inB = (cb[col] ?? '').includes(t);
+        if (inA !== inB) {
+          bad.push(
+            `「${why}」两表不一致：SKILL.md 的${col === 1 ? '快模式' : '全量模式'}格${inA ? '有' : '没有'}「${t}」，` +
+              `README.md 的同一格${inB ? '有' : '没有'}`,
+          );
+        }
+      }
+    }
+  }
+  if (bad.length) {
+    fail(
+      `SKILL.md 与 README.md 的两档模式表对不上：\n    ${bad.join('\n    ')}\n` +
+        '两张表面向不同读者，但说的必须是同一件事——否则按 README 理解的读者和按 SKILL.md 执行的模型会得出相反结论。',
+    );
+  } else {
+    ok('SKILL.md 与 README.md 的两档模式表对「跑什么」说的一致');
+  }
+}
+
+// ---------- 35. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
 console.log('');
