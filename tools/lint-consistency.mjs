@@ -88,8 +88,7 @@ const CANONICAL_DIMENSIONS = [
   '设计', '方法契约', '实现', '文档', '硬编码', '重复', '过度设计',
   '错误路径与部分失败', '并发与生命周期', '安全', '兼容性', '可观测性', '性能', '规模与复杂度', '测试盲区',
 ];
-const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）', 'n 条'];
-{
+const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）', 'n 条'];{
   const tpl = read('references/output-template.md');
   const tables = [];
   let current = null;
@@ -126,8 +125,9 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     }
     if (!bad) ok(`${tables.length} 张覆盖表的行名与规范集合（15 行）一致`);
 
-    // 结果格取值：允许 无发现 / 已查（见 ...） / 未扫（...） / N 条 / N 条（...）
-    const resultRe = /^(无发现|已查（见 .+）|未扫（.+）|\d+ 条(（.+）)?)$/;
+    // 结果格取值：允许 无发现 / 已查（见 ...） / 未扫（...） / N 条 / N 条（...） / N 条（...），另见 X
+    // 「N 条（级别），另见 X」是第 5 种取值：本维既有自己的条目、又有结论归到别的维度时用。
+    const resultRe = /^(无发现|已查（见 .+）|未扫（.+）|\d+ 条(（.+）)?(，另见 .+)?)$/;
     const offenders = [];
     for (const t of tables) {
       for (const l of t) {
@@ -137,9 +137,9 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
       }
     }
     if (offenders.length) {
-      fail(`覆盖表结果格出现声明之外的取值：${[...new Set(offenders)].join(' / ')}（允许：${CANONICAL_RESULTS.join(' / ')}）`);
+      fail(`覆盖表结果格出现声明之外的取值：${[...new Set(offenders)].join(' / ')}（允许：${CANONICAL_RESULTS.join(' / ')}，以及「N 条（级别），另见 X」）`);
     } else {
-      ok(`覆盖表结果格取值都在声明的取值集合内（${CANONICAL_RESULTS.join(' / ')}）`);
+      ok(`覆盖表结果格取值都在声明的取值集合内（${CANONICAL_RESULTS.join(' / ')}，另允许「N 条（级别），另见 X」）`);
     }
   }
 }
@@ -433,14 +433,16 @@ const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）
     if (block.includes('...') || block.includes('…')) {
       ok('示例块里有省略号，跳过「覆盖表声明 ↔ 正文条目」逐行核对');
     } else {
-      const rows = block.split('\n').filter((l) => /^\|\s*[^-|\s][^|]*\|/.test(l) && /\|\s*\d+ 条（.+）\s*\|/.test(l));
+      const rows = block.split('\n').filter((l) => /^\|\s*[^-|\s][^|]*\|/.test(l) && /\|\s*\d+ 条（.+）(，另见 .+)?\s*\|/.test(l));
       const missing = [];
       for (const r of rows) {
         const cells = r.split('|').map((c) => c.trim());
         const dim = cells[1];
-        const m = cells[2].match(/^(\d+) 条（(.+)）$/);
+        // 「N 条（级别）」与「N 条（级别），另见 X」都要能解析出条数与级别
+        const m = cells[2].match(/^(\d+) 条（(.+)?）(，另见 .+)?$/);
         if (!m) continue;
         const [, n, level] = m;
+        if (!level) continue;
         const tag = `[${level}][${dim}]`;
         const count = block.split(tag).length - 1;
         if (count < Number(n)) {
