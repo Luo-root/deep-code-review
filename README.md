@@ -151,6 +151,7 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 
 范围：feature/rate-limit 相对 main 的 7 个文件（merge-base a1b2c3d）。
 结论：方向先定 —— P0 0、P1 2、P2 1、P3 0、待拍板 1。
+宣称：Redis 超时时降级为本地计数 ／ 实际：Redis 超时时把错误当成「未限流」，放行全部请求。
 
 ## 维度覆盖
 
@@ -271,6 +272,8 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 node tools/lint-skill.mjs .        # 单文件合规校验
 node tools/lint-consistency.mjs .  # 跨文件一致性校验
 ```
+
+两个脚本守的不只是「文件之间对得上」，还有一批硬规范：frontmatter 的键与 description 长度、正文行数上限、相对表述。其中 frontmatter 与长度上限来自 Agent Skills 规范，仓库里不重复规定；相对表述是本仓库自定的规矩——**成品要自述能力，不能靠跟别的东西比较来定义自己**。
 
 ## 贡献
 

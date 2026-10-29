@@ -14,6 +14,10 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, basename, resolve } from 'node:path';
 
+// Agent Skills 规范（agentskills.io/specification.md）只认固定的 frontmatter 键，
+// 且正文有行数上限——超限的 skill 在多数运行时里读不全。
+// `allowed-tools` / `model` 会改变宿主的执行语义；`license` 由仓库根的 LICENSE 文件承担，
+// 不写进 frontmatter。三条禁用键与 500 行上限都来自规范，不是本仓库自定的口味。
 const FORBIDDEN_FRONTMATTER_KEYS = ['allowed-tools', 'license', 'model'];
 const MAX_BODY_LINES = 500;
 // Agent Skills 规范：description 必须 1–1024 字符（agentskills.io/specification.md）。

@@ -12,7 +12,7 @@
 // 用法：node tools/lint-consistency.mjs [repo-root]     默认当前目录
 // 退出码：0 = 通过，1 = 有错误
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const dir = resolve(process.argv[2] ?? '.');
@@ -97,6 +97,9 @@ const BLOCK_KINDS = {
   full: (b) => b.includes(COVERAGE_HEAD) && /##\s*必须修/.test(b) && COUNT5_RE.test(b),
   zero: (b) => b.includes(COVERAGE_HEAD) && !/##\s*必须修/.test(b) && COUNT5_RE.test(b),
   fast: (b) => !b.includes(COVERAGE_HEAD) && !/##\s*必须修/.test(b) && COUNT5_RE.test(b),
+  // 快模式示例的「像不像」判据：**不能依赖五项计数**——快模式零发现示例本来就不写计数，
+  // 靠计数来识别，等于「缺计数的示例」整块隐形，而那正是要抓的情形。
+  fastish: (b) => !b.includes(COVERAGE_HEAD) && !/##\s*必须修/.test(b),
 };
 
 /** 按特征取块；命中数不等于 1 时返回 null（调用方必须报红，不能默认取第一个） */
@@ -168,6 +171,21 @@ const RESULT_VALUES = [
 const ACTUAL_RESULT_COUNT = RESULT_VALUES.length;
 // 允许出现在结果格里的取值描述（供错误消息与文档使用）
 const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
+// 标签的第三段合法取值（引入方式）
+const CANONICAL_ORIGINS = ['本次引入', '既有', '现状'];
+/**
+ * 像不像 finding 标签：级别开头，或维度段是规范维度名，或第三段是引入方式。
+ * 否则就是 markdown 的引用式链接（[文字][fast-mode]）——那种不是标签，
+ * 按标签去校验它，贡献者在契约文件里写一个正常链接就被 CI 说成「维度段不合法」。
+ * 三个条件合起来，既放行正常链接，又不放过写错级别（[待定][实现][本次引入]）
+ * 与漏了级别段（[实现][本次引入]）这两种真错。
+ */
+function looksLikeTag(level, dim, origin) {
+  if (/^(P\d+|待拍板|级别)$/.test(level)) return true;
+  if (CANONICAL_DIMENSIONS.includes(dim)) return true;
+  if (origin && CANONICAL_ORIGINS.includes(origin)) return true;
+  return false;
+}
 {
   const tpl = read('references/output-template.md');
   const tables = [];
@@ -234,6 +252,56 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
       fail(`覆盖表结果格出现声明之外的取值：${[...new Set(offenders)].join(' / ')}（允许：${CANONICAL_RESULTS.join(' / ')}）`);
     } else {
       ok(`覆盖表结果格取值都在声明的取值集合内（${CANONICAL_RESULTS.join(' / ')}）`);
+    }
+
+    // 结果格必须每行都有结论——覆盖表的全部意义就是「我扫过了」的凭证。
+    // 例外是骨架模板：它整张都空（模型照着填）。所以规则是**要么整张都空、要么整张都不空**：
+    // 此前空格子被直接跳过，示例里空一行照样全绿，而模型会照抄那个空格。
+    const blankBad = [];
+    for (const [ti, t] of tables.entries()) {
+      const rows = t.filter((l) => !l.split('|')[1].trim().includes('…'));
+      const cells = rows.map((l) => l.split('|')[2].trim());
+      const nonEmpty = cells.filter((c) => c).length;
+      if (!nonEmpty) continue; // 整张空 = 骨架模板
+      const blanks = cells.filter((c) => !c).length;
+      if (blanks) blankBad.push(`第 ${ti + 1} 张覆盖表有 ${blanks} 行没有结论`);
+    }
+    if (blankBad.length) {
+      fail(
+        `覆盖表有行没有结论：\n    ${blankBad.join('\n    ')}\n` +
+          '契约写「每个维度都要留下结论，包括『无发现』」——空格子既不是「扫过没问题」，也不是「没扫」，读者无法区分。',
+      );
+      bad += 1;
+    } else {
+      ok('覆盖表每行都有结论（骨架模板整张留空是允许的）');
+    }
+
+    // 「查了什么」列不能是模板句——契约点名禁止「只写维度名」「已全面检查」「模板句」，
+    // 此前只查非空，模板句照样过。模型照抄模板句，覆盖表看着齐全，读者无法复核。
+    const FORBIDDEN_WHAT = ['已全面检查', '已全部检查', '全面检查', '已检查', '已看', '已读'];
+    const whatBad = [];
+    for (const [ti, t] of tables.entries()) {
+      for (const l of t) {
+        const cells = l.split('|');
+        const dim = (cells[1] || '').trim();
+        if (dim.includes('…')) continue;
+        const what = (cells[3] || '').trim();
+        if (!what) continue; // 非空由「查了什么」列非空那项管
+        if (FORBIDDEN_WHAT.includes(what)) {
+          whatBad.push(`第 ${ti + 1} 张「${dim}」行的「查了什么」写的是模板句「${what}」`);
+          continue;
+        }
+        if (what === dim) whatBad.push(`第 ${ti + 1} 张「${dim}」行的「查了什么」只写了维度名`);
+      }
+    }
+    if (whatBad.length) {
+      fail(
+        `「查了什么」列出现模板句：\n    ${whatBad.join('\n    ')}\n` +
+          '契约要求「每行至少给一个可核对的事实」——模板句与「我真扫了」逐字不可区分，读者无法复核。',
+      );
+      bad += 1;
+    } else {
+      ok('「查了什么」列没有模板句，也不是只写维度名');
     }
 
     // 「已查（见 X）」与「另见 X」的 X 必须是一个规范维度名——
@@ -313,10 +381,13 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
       .filter((l) => /^\d+\.\s+\*\*/.test(l))
       .map((l) => l.match(/^\d+\.\s+\*\*(.+?)\*\*/)[1]),
   );
-  const readmeLine = readme.find((l) => l.startsWith('固定七段'));
+  // README 的七段清单：锚点用契约里的实际措辞（「七段骨架：」）。
+  // 此前锚点写的是「固定七段」——README 里根本没这四个字，于是这一分支**一次都没跑过**，
+  // 却照样打印「在 README 里一致」。现在找不到锚点就报红，不许静默跳过。
+  const readmeLine = readme.find((l) => l.startsWith('七段骨架：'));
   const readmeList = norm(
     readmeLine
-      ? readmeLine.replace('固定七段：', '').replace(/。$/, '').split('、').map((s) => s.trim())
+      ? readmeLine.replace('七段骨架：', '').replace(/。$/, '').split('、').map((s) => s.trim())
       : [],
   );
   const expect = norm(EXPECTED);
@@ -327,7 +398,13 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
     fail(`SKILL.md 的完整结构段名与顺序不符：${skillList.join(' | ')}（应为 ${expect.join(' | ')}）`);
     bad += 1;
   }
-  if (readmeList.length && readmeList.join('|') !== expect.join('|')) {
+  if (!readmeLine) {
+    fail(
+      'README.md 里找不到「七段骨架：结论、…」那一行——README 的七段清单无从校验。' +
+        '锚点必须跟着契约的实际措辞走，措辞一改就要同步这里（否则这一项会静默失效）。',
+    );
+    bad += 1;
+  } else if (readmeList.join('|') !== expect.join('|')) {
     fail(`README 的段名与顺序不符：${readmeList.join(' | ')}（应为 ${expect.join(' | ')}）`);
     bad += 1;
   }
@@ -386,6 +463,7 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
       while ((m = re.exec(l)) !== null) {
         const [, level, dim, origin] = m;
         if (level === '级别' && dim === '维度') continue; // 占位符模板，不是真标签
+        if (!looksLikeTag(level, dim, origin)) continue; // markdown 引用式链接，不是标签
         count += 1;
         if (!CANONICAL_DIMENSIONS.includes(dim)) {
           offenders.push(`${f}: 维度段「${dim}」不在规范维度名里（${level}[${dim}]）`);
@@ -502,8 +580,21 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
 // ---------- 10. 七维速查表不得复述维度细则里的分类措辞 ----------
 {
   // 这些词是 dimensions.md 的判断分档。速查表只留「要回答的问题」。
-  // dimensions.md 以后新增分类时，把新词加进这个列表。
-  const CLASSIFY_TERMS = ['协议固定值', '业务政策值'];
+  //
+  // 词表**从 dimensions.md 第 5 维的「先分清是哪一类」表头派生**，不抄一份：
+  // 抄本会漂——dimensions.md 将来加第三类分档，抄本不会跟着长，
+  // 速查表就可以开始复述它而 lint 不认。派生之后，加一档就自动生效。
+  const dimSec5 = section(read('references/dimensions.md'), /^##\s*5\./);
+  const classifyHeader = dimSec5.find((l) => /^\|\s*\|\s*[^|]+\s*\|/.test(l));
+  const CLASSIFY_TERMS = classifyHeader
+    ? classifyHeader.split('|').slice(2, -1).map((c) => c.trim()).filter(Boolean)
+    : [];
+  if (!CLASSIFY_TERMS.length) {
+    fail(
+      'dimensions.md 第 5 维里找不到「先分清是哪一类」的分档表头——' +
+        '分类词表无从派生，速查表复述分类措辞就拦不住了',
+    );
+  }
   const pick = (lines) => lines.filter((l) => /^\|\s*[1-7]\s*\|/.test(l));
   const offenders = [];
   for (const [f, lines] of [['SKILL.md', read('SKILL.md')], ['README.md', read('README.md')]]) {
@@ -520,7 +611,7 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
         '写两份必然漂移，漂移的那份会让这一维被系统性漏报。',
     );
   } else {
-    ok('七维速查表没有复述维度细则的分类措辞（判据单一真相源在 dimensions.md）');
+    ok(`七维速查表没有复述维度细则的分类措辞（判据单一真相源在 dimensions.md，本轮词表：${CLASSIFY_TERMS.join(' / ')}）`);
   }
 }
 
@@ -1551,7 +1642,7 @@ function parsePlaybookSections(pb) {
   // 只有「级别开头」才算 finding 标签。此前任何相邻的 [X][Y] 都被当标签——
   // markdown 的引用式链接（[文字][fast-mode]）被说成「维度段 fast-mode 不合法」。
   // 级别写成 P4 这类错值仍要报出来，所以「像不像级别」按形态判，不按合法值判。
-  const LEVEL_LIKE = /^(P\d+|待拍板|级别)$/;
+  // （判据在文件顶部的共享 looksLikeTag() 里，第 6 项与本项共用同一份。）
   const offenders = [];
   let count = 0;
   for (const f of files) {
@@ -1561,8 +1652,8 @@ function parsePlaybookSections(pb) {
       while ((m = re.exec(l)) !== null) {
         const [, level, dim, origin] = m;
         if (level === '级别' && dim === '维度') continue; // 占位符模板，不是真标签
-        if (!LEVEL_LIKE.test(level)) {
-          // 不是级别开头，多半是 markdown 链接，不当标签——
+        if (!looksLikeTag(level, dim, origin)) {
+          // 不是标签，多半是 markdown 链接，不当标签——
           // 但「维度][引入方式]」这种漏了级别段的写法仍然要报出来
           if (CANONICAL_DIMENSIONS.includes(level) && ORIGIN.includes(dim)) {
             offenders.push(`${f}: 标签「${level}[${dim}]」漏了级别段（形态固定三段）`);
@@ -1762,6 +1853,33 @@ function parsePlaybookSections(pb) {
   for (const t of TOKENS) {
     if (!sample.some((l) => l.includes(t))) bad.push(`references/regression-review.md 的快模式示例里没有出现「${t}」`);
   }
+  // 全量模式与零发现的示例里也必须有「宣称：… ／ 实际：…」这一行——
+  // 契约要求两档都写，而模型模仿的是示例：示例里没有，模型就不会写，
+  // 第 1 步的落差对照直接消失（补进去之后没人守，照样会漂回去）。
+  for (const [rel, kinds] of [
+    ['references/output-template.md', ['full', 'zero']],
+    ['README.md', ['full']],
+  ]) {
+    const blocks = fencedBlocks(read(rel));
+    for (const kind of kinds) {
+      const hits = blocks.filter(BLOCK_KINDS[kind]);
+      if (hits.length !== 1) {
+        bad.push(`${rel}：${kind} 示例块定位失败（应恰好 1 块，实际 ${hits.length} 块）——「宣称／实际」行无从校验`);
+        continue;
+      }
+      // 两种合法写法：有落差写「宣称：… ／ 实际：…」，没有落差写「宣称与实际一致」。
+      // 只认前一种会把零发现示例（按契约写的是后者）误判成违规。
+      const claimLine = hits[0]
+        .split('\n')
+        .find((l) => /^宣称[：与]/.test(l.trim()) && l.includes('实际'));
+      if (!claimLine) {
+        bad.push(
+          `${rel}：${kind} 示例里没有「宣称：… ／ 实际：…」这一行` +
+            '（没有落差时写「宣称与实际一致」也算）——两档都要写这一行',
+        );
+      }
+    }
+  }
   if (bad.length) {
     fail(
       `快模式的固定栏位缺字面量或示例没示范：\n    ${bad.join('\n    ')}\n` +
@@ -1850,6 +1968,10 @@ function parsePlaybookSections(pb) {
         new RegExp(`^[-*]\\s*${esc(anchor)}\\s*[：:]`).test(l) ||
         new RegExp(`^${esc(anchor)}\\s*[：:]`).test(l),
     );
+  // 指针也可能指向 dimensions.md 里的**独立小节**（例如「规模与复杂度」不在任何一维内部）。
+  // 只在第 N 维体内找锚点时，这种指针会被误报成落空——反过来把它改写成受检句式
+  // 「第 N 维的「规模与复杂度」」同样报红，而那一节确实存在。
+  const resolvesSection = (anchor) => sections.some((s) => s.title.startsWith(anchor));
   const bad = [];
   const sources = [
     ['SKILL.md', read('SKILL.md')],
@@ -1873,9 +1995,25 @@ function parsePlaybookSections(pb) {
           bad.push(`${name}:${i + 1} 指向「第 ${n} 维」，但 dimensions.md 里没有第 ${n} 维`);
           continue;
         }
-        if (!resolves(sec.body, anchor)) {
+        if (!resolves(sec.body, anchor) && !resolvesSection(anchor)) {
           bad.push(
             `${name}:${i + 1} 指向「第 ${n} 维的「${anchor}」」，但 dimensions.md 第 ${n} 维里找不到「${anchor}」这一节或这一条`,
+          );
+        }
+      }
+      // 并列指针：「第 N 维的「A」与「B」」里的 B 指向的是独立小节，不在第 N 维内部。
+      // 此前这个形状压根不进检查（只认「第 N 维的「X」」一种句式），落空无人报。
+      const par = /第\s*[1-7]\s*维的「[^」]+」\s*(?:与|和|、|,|，)\s*「([^」]+)」/g;
+      let pm;
+      while ((pm = par.exec(l)) !== null) {
+        checked += 1;
+        const anchor = pm[1];
+        const found =
+          resolvesSection(anchor) ||
+          sections.some((s) => s.body.some((x) => x.includes(`**${anchor}`)));
+        if (!found) {
+          bad.push(
+            `${name}:${i + 1} 并列指针「${anchor}」在 dimensions.md 里找不到对应的小节或条目`,
           );
         }
       }
@@ -1891,7 +2029,168 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 39. 本文件末尾才判定退出码 ----------
+// ---------- 39. playbook 不得声明覆盖七维或规模扫描 ----------
+// playbooks.md 明写「规模扫描不被任何 playbook 覆盖」、各维也写着「本维不被任何 playbook 覆盖」。
+// 但第 15 / 18 / 21 项只查「声明的维度有没有对应条目」，**没人禁止声明它们**——
+// 一旦某份 playbook 声明覆盖「方法契约」或「规模与复杂度」，
+// 按「扫完 playbook 即视为已覆盖，不再重复扫」，整维会被跳过，而七维是本 skill 的主菜。
+{
+  const SEVEN = ['设计', '方法契约', '实现', '文档', '硬编码', '重复', '过度设计'];
+  const FORBIDDEN = new Set([...SEVEN, '规模与复杂度']);
+  const sections = parsePlaybookSections(read('references/playbooks.md'));
+  const bad = [];
+  for (const s of sections) {
+    for (const d of s.declared) {
+      if (FORBIDDEN.has(d)) {
+        bad.push(
+          `${s.name}：覆盖声明里写了「${d}」——七维与规模扫描都不被任何 playbook 覆盖，` +
+            '声明了就等于整维被跳过，覆盖表会替没查过的维度背书',
+        );
+      }
+    }
+  }
+  if (bad.length) {
+    fail(`playbook 声明覆盖了不许覆盖的维度：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok(`playbook 都没有声明覆盖七维或规模扫描（检查了 ${sections.length} 份 playbook）`);
+  }
+}
+
+// ---------- 40. 引入方式段必须与段落、与模式相容 ----------
+// 契约写死两条：①「[既有]」不进「必须修」的 P0/P1（基线之前就存在的问题不能挡合并）；
+// ②「快模式必有基线，所以快模式不出现 [现状]」。
+// 此前只校验第三段属于 {本次引入, 既有, 现状} 这个集合，不看它落在哪一段、哪种模式里。
+{
+  const bad = [];
+  // ① [既有] 不得出现在「必须修」段
+  for (const rel of ['README.md', 'references/output-template.md']) {
+    for (const b of fencedBlocks(read(rel)).filter(BLOCK_KINDS.full)) {
+      const start = b.indexOf('## 必须修');
+      if (start === -1) continue;
+      const rest = b.slice(start + '## 必须修'.length);
+      const next = rest.search(/^##\s/m);
+      const body = next === -1 ? rest : rest.slice(0, next);
+      for (const m of body.matchAll(/^###\s+\[(P0|P1)\]\[[^\]]+\]\[([^\]]+)\]/gm)) {
+        if (m[2] === '既有') {
+          bad.push(`${rel}：「必须修」段里有一条 [${m[1]}][…][既有]——既有问题不进「必须修」的 P0/P1`);
+        }
+      }
+    }
+  }
+  // ② 快模式示例里不得出现 [现状]
+  for (const rel of ['references/regression-review.md', 'references/output-template.md']) {
+    for (const b of fencedBlocks(read(rel)).filter(BLOCK_KINDS.fastish)) {
+      if (b.includes('[现状]')) {
+        bad.push(`${rel}：快模式示例里出现了「[现状]」——快模式必有基线，引入方式段只用「本次引入」或「既有」`);
+      }
+    }
+  }
+  if (bad.length) {
+    fail(`引入方式段与段落/模式不匹配：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok('引入方式段与段落、模式相容（[既有] 不进「必须修」；快模式不出现 [现状]）');
+  }
+}
+
+// ---------- 41. SKILL.md 的维度名清单必须与覆盖表行名一致 ----------
+// SKILL.md 写着「维度段以覆盖表行名为准（覆盖表 15 行，一行一个）：……」——
+// 覆盖表是权威，那一行是它的副本。此前副本与覆盖表、CANONICAL_DIMENSIONS 三份互不校验，
+// 改一处维度名，另外两处静默失配而 CI 全绿。
+{
+  const skill = read('SKILL.md');
+  const line = skill.find((l) => l.includes('以覆盖表行名为准'));
+  const bad = [];
+  if (!line) {
+    bad.push('SKILL.md 里找不到「以覆盖表行名为准」那一行——维度段合法取值的出处没了');
+  } else {
+    const m = line.match(/一行一个）：\s*([^—]+)—/);
+    if (!m) {
+      bad.push('SKILL.md 的维度名清单解析不出来（应当是「覆盖表 15 行，一行一个）：<名称 / 名称 / …>——…」的形状）');
+    } else {
+      const got = m[1].split('/').map((s) => s.trim()).filter(Boolean);
+      if (got.join('|') !== CANONICAL_DIMENSIONS.join('|')) {
+        bad.push(
+          `SKILL.md 的维度名清单与覆盖表行名不一致：\n    实际：[${got.join(', ')}]\n` +
+            `    规范：[${CANONICAL_DIMENSIONS.join(', ')}]`,
+        );
+      }
+    }
+  }
+  if (bad.length) {
+    fail(`SKILL.md 的维度名清单与覆盖表对不上：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok(`SKILL.md 的维度名清单与覆盖表行名逐项一致（${CANONICAL_DIMENSIONS.length} 个）`);
+  }
+}
+
+// ---------- 42. 快模式示例必须有范围与基线，有条目时必须写各级数量 ----------
+// 「一个没有作用域的『能不能合』是最容易被误用的结论」——范围与基线是快模式的头两行。
+// 此前没有任何检查看这两行：把「相对 `main`（merge-base `a1b2c3d`）」删掉、把五项计数换成
+// 「见下」，CI 照样全绿。识别快模式示例**不能靠五项计数**——快模式零发现示例本来就不写计数。
+{
+  const bad = [];
+  let checked = 0;
+  for (const rel of ['references/regression-review.md', 'references/output-template.md']) {
+    for (const b of fencedBlocks(read(rel)).filter(BLOCK_KINDS.fastish)) {
+      checked += 1;
+      const lines = b.split('\n');
+      const scopeLine = lines.find((l) => l.trim().startsWith('范围：'));
+      if (!scopeLine) {
+        bad.push(`${rel}：快模式示例没有「范围：」那一行——一个没有作用域的结论最容易被误用`);
+        continue;
+      }
+      if (!scopeLine.includes('相对') && !scopeLine.includes('merge-base')) {
+        bad.push(`${rel}：快模式示例的范围行没写基线（既没有「相对 X」也没有「merge-base xxx」）`);
+      }
+      const hasFinding = /^\s*[-*]\s+\[(?:P0|P1|P2|P3|待拍板)\]/m.test(b);
+      if (hasFinding && !COUNT5_RE.test(b)) {
+        bad.push(`${rel}：快模式示例有 finding 条目却没写各级数量（结论行写各级数量这条两档通用）`);
+      }
+      if (!hasFinding && COUNT5_RE.test(b)) {
+        bad.push(`${rel}：快模式零发现示例不该写各级数量（零发现时不写数量）`);
+      }
+    }
+  }
+  if (bad.length) {
+    fail(`快模式示例缺范围、基线或各级数量：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok(`快模式示例都有范围 + 基线，且数量与是否有条目相符（检查了 ${checked} 个快模式示例块）`);
+  }
+}
+
+// ---------- 43. 「本次审查要读哪些文件」表必须列全 references ----------
+// 运行时读哪些文件，全看 SKILL.md 开头这张表。lint-skill 的孤儿检查只要求文件在 SKILL.md
+// **任意位置**被提过（散文里提一句也算），所以把表格里那一行删掉，闸门表就静默不可达了。
+{
+  const skill = read('SKILL.md');
+  const rows = section(skill, /^##\s*本次审查要读哪些文件/).filter(
+    (l) => /^\|/.test(l) && !/^\|\s*[-: ]+\|/.test(l) && !/^\|\s*文件\s*\|/.test(l),
+  );
+  const listed = new Set();
+  for (const r of rows) {
+    const m = r.match(/^\|\s*`([^`]+)`/);
+    if (m) listed.add(m[1]);
+  }
+  const onDisk = readdirSync(join(dir, 'references')).filter((f) => f.endsWith('.md')).sort();
+  const expected = ['SKILL.md', ...onDisk.map((f) => `references/${f}`)];
+  const missing = expected.filter((f) => !listed.has(f));
+  const bad = [];
+  if (!rows.length) {
+    bad.push('SKILL.md 里找不到「本次审查要读哪些文件」这张表');
+  } else if (missing.length) {
+    bad.push(`读文件表里少了：${missing.join('、')}`);
+  }
+  if (bad.length) {
+    fail(
+      `「本次审查要读哪些文件」表不完整：\n    ${bad.join('\n    ')}\n` +
+        '这张表决定运行时读哪些文件——表里没有的文件在运行时不可达（闸门表被摘掉，证伪环节就静默消失了）。',
+    );
+  } else {
+    ok(`「本次审查要读哪些文件」表列全了 ${expected.length} 个文件（SKILL.md + ${onDisk.length} 个 references）`);
+  }
+}
+
+// ---------- 44. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
 console.log('');
