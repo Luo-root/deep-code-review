@@ -29,10 +29,13 @@ const MAX_DESCRIPTION_CHARS = 1024;
 //
 // 但「内置 / 自带 / 预置」在技术语境里是常用词（「语言自带的排序函数」「预置的超时」）——
 // 裸词一拦，贡献者写一句技术事实就被 CI 红，而提示语在这类语境里根本不适用。
-// 所以分两类：
+// 所以分三类：
 //   - 无歧义的相对说法（「别的工具」「官方那套」）：一律拦。
-//   - 「内置 / 自带 / 预置」：只在它指的是**另一个工具**时才拦——
-//     修饰工具类名词，或出现在比较句式里。
+//   - 「内置 / 自带 / 预置」+ **固定工具名词**：拦（「内置审查器」「内置的 code-review」）。
+//   - 「内置 / 自带 / 预置」+ **另一个产品的专有名词**：拦
+//     （「内置 Claude Code 的审查结果不可信」——封闭名词表挡不住这一类，
+//     只要那个名字不在表里就放过，而成品里正是禁止这种相对表述；第 24 轮 24A 的 R24A-08）。
+//   - 其余「内置 / 自带 / 预置」：WARN 提醒作者确认一次（不拦，避免误伤技术事实）。
 const RELATIVE_PHRASES = [
   '别的工具', '另一个工具', '第二个工具', '官方那套', '随运行时',
 ];
@@ -44,6 +47,17 @@ const CONTEXTUAL_RE = new RegExp(
 );
 const COMPARISON_RE = new RegExp(
   `(${CONTEXTUAL_PHRASES.join('|')})[^。；\\n]{0,20}?(${COMPARISON_MARKERS.join('|')})`,
+);
+// 「内置 / 自带 / 预置」+ 另一个产品的名字：
+//   ① 多词专有名词：Claude Code / GitHub Copilot（每个词首字母大写、且不是全大写缩写）
+//   ② 带连字符的拉丁工具名：code-review / deep-code-review（两个以上字母词，用连字符连起来）
+// 全大写缩写（HTTP / JSON）与单个普通词（Markdown）不算——它们是技术事实，不是产品名。
+const PRODUCT_RE = new RegExp(
+  `(${CONTEXTUAL_PHRASES.join('|')})(?:的)?\\s*(?:`
+  + `(?:[A-Z][a-z][A-Za-z0-9]*)(?:\\s+(?:[A-Z][a-z][A-Za-z0-9]*))+`
+  + `|`
+  + `[A-Za-z][A-Za-z]*(?:-[A-Za-z][A-Za-z]*){1,}`
+  + `)`,
 );
 // 扫描范围：契约文件、评测文档，以及仓库根下的其他 .md（CONTRIBUTING / AGENTS / CHANGELOG）。
 // evals 只扫一层——evals/fixtures/ 下是被审样本，不是成品。
@@ -332,8 +346,26 @@ for (const f of phraseTargets) {
     const cm = line.match(CONTEXTUAL_RE);
     if (cm) hit(cm[0]);
     else {
-      const cp = line.match(COMPARISON_RE);
-      if (cp) hit(cp[0]);
+      // 「内置 + 另一个产品的专有名词」同样是相对表述
+      const pm = line.match(PRODUCT_RE);
+      if (pm) hit(pm[0]);
+      else {
+        const cp = line.match(COMPARISON_RE);
+        if (cp) hit(cp[0]);
+        else {
+          // 兜底：出现「内置 / 自带 / 预置」就提醒作者确认一次。
+          // 不拦（避免误伤「语言自带的排序函数」这类技术事实），
+          // 但也不放过——写错了要有人看一眼。
+          const wm = line.match(new RegExp(CONTEXTUAL_PHRASES.join('|')));
+          if (wm) {
+            warn(
+              `${f.replace(dir + '/', '')}:${i + 1} 出现「${wm[0]}」。` +
+                '如果它指的是另一个产品/工具，请改写成本 skill 自己的说法；' +
+                '如果确实只是技术事实（如「语言自带的排序函数」），可以忽略这条提醒。',
+            );
+          }
+        }
+      }
     }
   });
 }

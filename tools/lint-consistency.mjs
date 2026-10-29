@@ -195,7 +195,7 @@ const BLOCK_KINDS = {
  * 都从这张表派生。抄两份就会漂——加一种形态只改一处，检查就漏了一半。
  */
 const EXAMPLE_BLOCKS = [
-  { rel: 'references/output-template.md', kind: 'skeleton', want: 1, needClaim: false, coverage: 'blank' },
+  { rel: 'references/output-template.md', kind: 'skeleton', want: 1, needClaim: true, coverage: 'blank' },
   { rel: 'references/output-template.md', kind: 'zero', want: 1, needClaim: true, coverage: 'abbrev' },
   { rel: 'references/output-template.md', kind: 'fast', want: 1, needClaim: true, coverage: 'none' },
   { rel: 'references/output-template.md', kind: 'full', want: 1, needClaim: true, coverage: 'exact' },
@@ -229,6 +229,35 @@ function headingSections(lines) {
     if (cur !== null) cur.push(l);
   }
   return out.map((s) => s.join('\n'));
+}
+
+/**
+ * 契约的七段小节名（**唯一真相源**）：第 4 项与第 29 项共用这一份。
+ * 抄两份就会漂——第 4 项按一份核对「第 4 维/第 29 项」按另一份定位，
+ * 改一处段名，另一处就静默失效（示例里把小节改了名，示例示范的内容就没人查了）。
+ */
+const SECTION_NAMES = ['结论', '维度覆盖', '必须修', '建议修', '需要你拍板', '已查过没问题', '本次没覆盖'];
+
+/** 段名归一化：去掉括注（`（…）` / `(…)`）与首尾空白 */
+function normSection(s) {
+  return s.replace(/（.*?）/g, '').replace(/\(.*?\)/g, '').trim();
+}
+
+/**
+ * 契约文件清单：**从磁盘推导**（references/ 下全部 .md + SKILL.md + README.md）。
+ * 第 6 / 31 / 38 项共用这一份——此前三项各自手写一份名单：
+ * 新增一个 references/*.md，它的全部内容就同时逃过「标签形态」与「维度指针」两项检查，
+ * 而 lint-skill 的孤儿检查还要求它必须被登记——于是新文件「登记了，但没人查」。
+ */
+function referenceFiles() {
+  const refDir = join(dir, 'references');
+  if (!existsSync(refDir)) return [];
+  return readdirSync(refDir).filter((f) => f.endsWith('.md')).sort().map((f) => `references/${f}`);
+}
+
+/** 要扫的契约文件（从磁盘推导，不手写名单） */
+function contractFiles() {
+  return ['SKILL.md', 'README.md', ...referenceFiles()];
 }
 
 /** 取 frontmatter 里某个键的值（支持 `|` 块标量） */
@@ -568,8 +597,8 @@ function looksLikeTag(level, dim, origin) {
 
 // ---------- 4. 七段结构：三个文件里的段名与顺序必须一致 ----------
 {
-  const EXPECTED = ['结论', '维度覆盖', '必须修', '建议修', '需要你拍板', '已查过没问题', '本次没覆盖'];
-  const norm = (a) => a.map((s) => s.replace(/（.*?）/g, '').replace(/\(.*?\)/g, '').trim());
+  const EXPECTED = SECTION_NAMES;
+  const norm = (a) => a.map(normSection);
 
   const skill = read('SKILL.md');
   const tpl = read('references/output-template.md');
@@ -614,7 +643,52 @@ function looksLikeTag(level, dim, origin) {
     if (i === -1) { fail(`output-template.md 的骨架里找不到或顺序不对：小节「## ${sec}」`); bad += 1; break; }
     idx = i;
   }
-  if (!bad) ok('七段结构在 SKILL.md / output-template.md / README.md 里段名与顺序一致');
+  // ---- 升级（第 24A-03）：七段结构必须**逐块**成立，不许靠别的块兜底 ----
+  // 此前这里是「整个 output-template.md 里有没有出现过这七个小节名」：
+  // 把示例块里的「## 已查过没问题」改成「## 已查过没问题的维度」，
+  // 骨架里那一份还在 → 这一项照样绿，而第 29 项（示例条目要有验证方式）已经失效。
+  // 现在改成：
+  //   ① **完整块**（骨架块 + 全量示例块）各自都要含这七段；
+  //   ② 任何示例块里的 `##` 小节名都必须是规范段名（改名 → 报红）。
+  // README 的示例是**节选**（「已查过没问题」是条件段），允许少段，但不许改段名。
+  const COMPLETE_BLOCKS = [
+    ['references/output-template.md', 'skeleton', '骨架块'],
+    ['references/output-template.md', 'full', '全量示例块'],
+  ];
+  for (const [rel, kind, label] of COMPLETE_BLOCKS) {
+    const block = exampleBlock(rel, kind);
+    if (!block) {
+      fail(`${rel} 的${label}定位失败——七段结构无从校验`);
+      bad += 1;
+      continue;
+    }
+    const heads = block.split('\n')
+      .filter((l) => /^##\s/.test(l))
+      .map((l) => normSection(l.replace(/^##\s+/, '')));
+    const missing = expect.filter((s) => !heads.includes(s));
+    if (missing.length) {
+      fail(`${rel} 的${label}里缺少小节：${missing.join('、')}——模型照抄这一块就会少段`);
+      bad += 1;
+    }
+  }
+  // 任何示例块里的 `##` 小节名都必须是规范段名
+  for (const rel of ['references/output-template.md', 'README.md', 'references/regression-review.md']) {
+    fencedBlocks(read(rel)).forEach((b, bi) => {
+      b.split('\n')
+        .filter((l) => /^##\s/.test(l))
+        .forEach((l) => {
+          const name = normSection(l.replace(/^##\s+/, ''));
+          if (!expect.includes(name)) {
+            fail(
+              `${rel} 第 ${bi + 1} 个代码块里的小节「## ${l.replace(/^##\s+/, '').trim()}」` +
+                `不是规范段名（应为 ${expect.join(' / ')}）——小节被改名，模型照抄就产出了另一套结构`,
+            );
+            bad += 1;
+          }
+        });
+    });
+  }
+  if (!bad) ok('七段结构在 SKILL.md / output-template.md / README.md 里段名与顺序一致（骨架块与示例块逐块核对）');
 }
 
 // ---------- 5. 结论计数格式：多处必须逐字相同 ----------
@@ -647,8 +721,11 @@ function looksLikeTag(level, dim, origin) {
 }
 
 // ---------- 6. finding 标签形态：三段齐全，级别段与维度段都是规范值 ----------
+// 扫描清单**从磁盘推导**（第 24A-04）：此前手写 4 个文件，
+// 新增一个 references/*.md，它的全部内容就逃过这一项——
+// 而 lint-skill 的孤儿检查还要求它必须被登记，于是新文件「登记了，但没人查」。
 {
-  const files = ['SKILL.md', 'README.md', 'references/regression-review.md', 'references/output-template.md'];
+  const files = contractFiles();
   const ORIGIN = ['本次引入', '既有', '现状'];
   const LEVELS = ['P0', 'P1', 'P2', 'P3', '待拍板'];
   const offenders = [];
@@ -1948,11 +2025,25 @@ function parsePlaybookSections(pb) {
   const TRACE_COUNT = /\d+\s*(处|个|行|次|条|项|遍|轮|点)/;
   const itemBad = [];
   let itemChecked = 0;
+  let blocksWithSection = 0;
+  // 下限守卫（第 24A-03）：示例里这一段必须**存在且有内容**。
+  // 此前定位靠小节标题的字面量（`^##\s*已查过没问题\s*$`），示例里把它改名，
+  // 整块检查就失效——而新增的「看起来没问题」条目照样没人管（第 4 维对每条 −1）。
+  // 现在：① 定位改用**规范段名集合**（与第 4 项同一份常量 SECTION_NAMES）；
+  //      ② 加下限——扫到的条目数少于下限就报红（扫不到东西比扫出错更糟）。
+  // 下限 = 骨架块 2 条 + 全量示例块 2 条（这是契约里两处示例当前的条目数；
+  // 契约改了条目数就要同步这里，并说明理由——否则这一项会静默失效）。
+  const MIN_TRACE_ITEMS = 4;
+  const MIN_TRACE_BLOCKS = 2;
   for (const rel of ['references/output-template.md', 'README.md', 'references/regression-review.md']) {
     for (const b of fencedBlocks(read(rel))) {
       const blines = b.split('\n');
-      const start = blines.findIndex((l) => /^##\s*已查过没问题\s*$/.test(l));
+      // 按结构定位：块内 `## ` 开头的标题里，段名属于规范段名集合的那一个
+      const start = blines.findIndex(
+        (l) => /^##\s/.test(l) && normSection(l.replace(/^##\s+/, '')) === '已查过没问题',
+      );
       if (start === -1) continue;
+      blocksWithSection += 1;
       let section = [];
       for (let i = start + 1; i < blines.length; i += 1) {
         if (/^##\s/.test(blines[i])) break;
@@ -1975,6 +2066,20 @@ function parsePlaybookSections(pb) {
     );
   } else {
     ok(`示例「已查过没问题」小节的每一条都带可核对的痕迹（检查了 ${itemChecked} 条）`);
+  }
+  // 下限守卫：扫到的条目数（与含该小节的块数）低于下限 → 这一项已经恒真/整块失效
+  if (blocksWithSection < MIN_TRACE_BLOCKS || itemChecked < MIN_TRACE_ITEMS) {
+    fail(
+      `示例「已查过没问题」只扫到 ${itemChecked} 条（${blocksWithSection} 个块），` +
+        `低于下限 ${MIN_TRACE_ITEMS} 条 / ${MIN_TRACE_BLOCKS} 个块——` +
+        '要么示例里这一段被改名或删掉了，要么这一项已经扫不到东西了。' +
+        '小节被改名的话，第 4 项会同时报红（示例块里的段名不是规范段名）。',
+    );
+  } else {
+    ok(
+      `示例「已查过没问题」这一段的下限守卫有效（扫到 ${itemChecked} 条 / ${blocksWithSection} 个块，` +
+        `下限 ${MIN_TRACE_ITEMS} 条 / ${MIN_TRACE_BLOCKS} 个块）`,
+    );
   }
 }
 
@@ -2043,12 +2148,9 @@ function parsePlaybookSections(pb) {
 // ---------- 31. 标签扫描必须覆盖 references/ 下所有文件 ----------
 // 此前只扫 4 个文件，playbooks.md / dimensions.md / verification.md 里的标签无人看——
 // 而它们是模型必读的文件，写错维度名照样会被当规范。
+// 扫描清单**从磁盘推导**（第 24A-04）：手写名单会漏，新增文件整份内容逃过检查。
 {
-  const files = [
-    'SKILL.md', 'README.md',
-    'references/regression-review.md', 'references/output-template.md',
-    'references/playbooks.md', 'references/dimensions.md', 'references/verification.md',
-  ];
+  const files = contractFiles();
   const ORIGIN = ['本次引入', '既有', '现状'];
   const LEVELS = ['P0', 'P1', 'P2', 'P3', '待拍板'];
   // 只有「级别开头」才算 finding 标签。此前任何相邻的 [X][Y] 都被当标签——
@@ -2108,7 +2210,7 @@ function parsePlaybookSections(pb) {
         '七段结构无从校验。若骨架的结论行被填成了真实数字，它就会和示例块混成一类，请把骨架改回 n 占位。',
     );
   } else {
-    const EXPECTED = ['结论', '维度覆盖', '必须修', '建议修', '需要你拍板', '已查过没问题', '本次没覆盖'];
+    const EXPECTED = SECTION_NAMES;
     const idx = [];
     for (const sec of EXPECTED) {
       const i = skeleton.split('\n').findIndex((l) => l.trim() === `## ${sec}`);
@@ -2357,6 +2459,16 @@ function parsePlaybookSections(pb) {
 // 契约里说「读第 5、6 维的『不算』两节」时，模型是照着这句话去找的。
 // 第 6 维根本没有叫「不算」的小节——指针落空，模型要么跳过（丢掉 tie-break 判据），
 // 要么整节照读（违背「最小子集」的用意）。所以指针必须指向真实存在的小节或条目。
+//
+// 扫描清单**从磁盘推导**（第 24A-04）：新增一个 references/*.md，它里面的指针就无人看。
+//
+// 指针句式**不写死**（第 24A-05）：此前只认「第 N 维的「X」」一种连接词，
+// 改成语义等价的「第 N 维中的「X」」就再也扫不到任何指针——而这一项没有「必须扫到 N 处」
+// 的下限守卫，于是检查整块失效、CI 照样全绿（第 24 轮 24A 的 R24A-05）。
+// 现在：
+//   ① 连接词放宽成一份固定集合（的 / 中的 / 里的 / 内的 / 中 / 里 / 内）；
+//   ② 另加一道**句式无关**的对账：凡「第 N 维」与紧随其后的「」之间只有连接词的，
+//      都算候选指针，必须被上面的正则捕获——否则报红并说清「正则没认出这个句式」。
 {
   const dim = read('references/dimensions.md');
   const sections = [];
@@ -2379,18 +2491,27 @@ function parsePlaybookSections(pb) {
   // 「第 N 维的「规模与复杂度」」同样报红，而那一节确实存在。
   const resolvesSection = (anchor) => sections.some((s) => s.title.startsWith(anchor));
   const bad = [];
-  const sources = [
-    ['SKILL.md', read('SKILL.md')],
-    ['README.md', read('README.md')],
-    ...['dimensions', 'playbooks', 'verification', 'regression-review', 'output-template'].map((n) => [
-      `references/${n}.md`,
-      read(`references/${n}.md`),
-    ]),
-  ];
+  // 扫描清单：从磁盘推导（SKILL.md + README.md + references/ 下全部 .md）
+  const sources = contractFiles().map((rel) => [rel, read(rel)]);
+  // 连接词集合（唯一一份）：语义等价的改写不该让检查整块失效
+  const CONNECT = '(?:的|中的|里的|内的|中|里|内)';
+  const DIRECT_RE = new RegExp(`第\\s*([1-7])\\s*维${CONNECT}\\s*「([^」]+)」`, 'g');
+  const PAR_RE = new RegExp(
+    `第\\s*[1-7]\\s*维${CONNECT}「[^」]+」\\s*(?:与|和|、|,|，)\\s*「([^」]+)」`,
+    'g',
+  );
+  // 句式无关的候选指针：提到「第 N 维」之后、紧跟的「」之前**只有连接词**。
+  // 连接词只收「的」这一族（的 / 中 / 里 / 内 / 之）——
+  // 它们把引号里的东西**绑定到某一维**（就是指针）。
+  // 「与 / 和 / 或」是并列连接词：引号里的东西可能是**并列的另一个对象**而不是指针
+  // （例如「第 7 维与「把公开 API 当死代码」这条误判共用这一份」——
+  //  引号里是一条误判的名字，不是第 7 维里的小节），所以不收。
+  const GAP_RE = /^[的中里内之]+$/;
   let checked = 0;
+  let candidates = 0;
   for (const [name, lines] of sources) {
     for (const [i, l] of lines.entries()) {
-      const re = /第\s*([1-7])\s*维的「([^」]+)」/g;
+      const re = new RegExp(DIRECT_RE.source, 'g');
       let m;
       while ((m = re.exec(l)) !== null) {
         checked += 1;
@@ -2409,7 +2530,7 @@ function parsePlaybookSections(pb) {
       }
       // 并列指针：「第 N 维的「A」与「B」」里的 B 指向的是独立小节，不在第 N 维内部。
       // 此前这个形状压根不进检查（只认「第 N 维的「X」」一种句式），落空无人报。
-      const par = /第\s*[1-7]\s*维的「[^」]+」\s*(?:与|和|、|,|，)\s*「([^」]+)」/g;
+      const par = new RegExp(PAR_RE.source, 'g');
       let pm;
       while ((pm = par.exec(l)) !== null) {
         checked += 1;
@@ -2423,7 +2544,36 @@ function parsePlaybookSections(pb) {
           );
         }
       }
+      // ---- 对账：句式无关地找一遍候选指针，正则没认出来的必须报出来 ----
+      const mention = /第\s*[1-7]\s*维/g;
+      let mm;
+      while ((mm = mention.exec(l)) !== null) {
+        const after = l.slice(mm.index + mm[0].length);
+        const q = after.indexOf('「');
+        if (q === -1) continue;
+        const gap = after.slice(0, q);
+        if (!GAP_RE.test(gap)) continue;
+        candidates += 1;
+        const tail = l.slice(mm.index);
+        // 覆盖判定必须**锚在这一处**上（`^`）——
+        // 否则同一行后面还有别的合法指针时，这一处会被误判成「已覆盖」。
+        const covered =
+          new RegExp(`^第\\s*[1-7]\\s*维${CONNECT}\\s*「[^」]+」`).test(tail) ||
+          new RegExp(`^第\\s*[1-7]\\s*维${CONNECT}「[^」]+」\\s*(?:与|和|、|,|，)\\s*「`).test(tail);
+        if (!covered) {
+          bad.push(
+            `${name}:${i + 1} 有一处「第 N 维${gap}「…」」的指针，但第 38 项的正则没认出这个句式——`
+              + '这一项会静默漏掉它，请把新的连接词加进正则（CONNECT）',
+          );
+        }
+      }
     }
+  }
+  // 下限守卫：一句指针都没扫到，说明检查已经恒真（比检查失效更糟）
+  if (checked === 0) {
+    fail(
+      '第 38 项一句维度指针都没扫到——检查已经恒真（正文里的「第 N 维…「…」」全都不认了）',
+    );
   }
   if (bad.length) {
     fail(
@@ -2431,7 +2581,10 @@ function parsePlaybookSections(pb) {
         '契约里写「读第 N 维的『X』」时，模型是照这句话去找的——指针落空，判据就被跳过了。',
     );
   } else {
-    ok(`第 N 维的指针都能在 dimensions.md 里解析到（检查了 ${checked} 处指针）`);
+    ok(
+      `第 N 维的指针都能在 dimensions.md 里解析到（检查了 ${checked} 处指针，` +
+        `句式无关地对账了 ${candidates} 处候选）`,
+    );
   }
 }
 
@@ -2750,17 +2903,24 @@ function parsePlaybookSections(pb) {
   // ---------- 46. 命中/归类的分母表述不得互斥 ----------
   {
     let bad = 0;
+    // 归一化：**折全角数字 + 折叠空白**。
+    // 禁止形态与必需形态必须走同一套口径——此前禁止形态容忍空格与全角，
+    // 必需形态却要求逐字「有效满分 23」：写成「有效满分23」就报红，
+    // 语义一个字没变，CI 照样红（第 24 轮 24A 的 R24A-09）。
+    const foldDigits = (s) => s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    const norm = (s) => foldDigits(s).replace(/\s+/g, ' ');
+    const tight = (s) => foldDigits(s).replace(/\s+/g, '');
     for (const rel of evalsScanFiles) {
       const text = read(rel).join('\n');
       // 模式要**容忍空格与全角**：字面量「满分 25」写成「满分25」或「满分 ２５」
       // 就从守卫底下钻过去了。折全角数字 → 再容忍各种空格。
-      const norm = text.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
-      if (/满分\s*[:：=]?\s*2\s*5/.test(norm)) {
+      const n = norm(text);
+      if (/满分\s*[:：=]?\s*2\s*5/.test(n)) {
         fail(`${rel} 出现「满分 25」——命中/归类的有效满分是 23（G9 / G25 与 G3 同根因），名义 25 只是条目数`);
         bad += 1;
       }
     }
-    if (!rubric.includes('有效满分 23')) {
+    if (!tight(rubric).includes('有效满分23')) {
       fail('evals/rubric.md 没有写明「有效满分 23」');
       bad += 1;
     }
@@ -2834,9 +2994,13 @@ function parsePlaybookSections(pb) {
   // 此前只查 `细则三.includes('口味问题')`——而「口味问题」这四个字在细则三的**补充句**里
   // 也出现，于是把细则三的那一整行删掉，lint 照样全绿（第 23 轮 23C 的 R23C-09）。
   // 现在改成**逐行对应**：正文 §2 的每一行，细则三 里必须找得到对应行。
-  // 对应关系按「细则三 那行覆盖正文这行多少内容」判定（中文去重后的字符覆盖率）——
-  // 两处措辞不完全一样（「命名、分包、格式」vs「命名 / 分包 / 格式」），
-  // 按字面相等匹配会把合法的改写也判红。
+  //
+  // 对应关系按**关键片段集合**判定（第 24A-06），不再按「中文去重后的字符覆盖率」：
+  // 覆盖率 ≥ 0.8 太松——把细则三的「口味问题」改写成「命名问题」，
+  // 16 个不同的字里还留着 14 个（0.875 ≥ 0.8），口径已经分叉
+  // （细则三把范围从 命名/分包/格式 缩到 命名）照样报绿。
+  // 关键片段 = ①括号里的枚举项（逐项相等）②类别名（相等）。
+  // 覆盖率只留作诊断信息（最接近的一行是哪一行）。
   {
     let bad = 0;
     // 只看正文的误报表（### 2. 误报 那一节），不扫全文——判定表里也会提到「不该报」
@@ -2867,6 +3031,26 @@ function parsePlaybookSections(pb) {
         .map((l) => l.split('|').slice(1, -1).map((x) => x.trim()))
         .filter((c) => c.length >= 2 && c[0] && !/^:?-{2,}$/.test(c[0]) && !/^(项|情形|场景)$/.test(c[0]));
       const cjkSet = (s) => new Set((s.match(/[\u4e00-\u9fff]/g) || []));
+      /**
+       * 一行的**关键片段**：
+       *   enums —— 最后一个括号组里的枚举项（逐项比较）；
+       *   label —— 类别名（括号之前、最后一个冒号之后的那一段）。
+       * 两处措辞可以不同（「命名、分包、格式」vs「命名 / 分包 / 格式」），
+       * 但类别名与枚举项必须一致——否则就是口径分叉。
+       */
+      const rowKey = (row) => {
+        const text = row.replace(/\*\*/g, '').replace(/`/g, '').trim();
+        const groups = [...text.matchAll(/[（(]([^）)]*)[）)]/g)];
+        const last = groups.length ? groups[groups.length - 1] : null;
+        const head = last ? text.slice(0, last.index) : text;
+        const enums = last
+          ? last[1].split(/[、\/]/).map((s) => s.replace(/\s+/g, '')).filter(Boolean)
+          : [];
+        const colon = Math.max(head.lastIndexOf('：'), head.lastIndexOf(':'));
+        const label = (colon === -1 ? head : head.slice(colon + 1)).replace(/\s+/g, '');
+        return { label, enums: [...new Set(enums)].sort() };
+      };
+      const sameEnums = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
       const bodyRows = rowsOf(body);
       const detailRows = rowsOf(detail);
       if (bodyRows.length < 3) {
@@ -2875,6 +3059,8 @@ function parsePlaybookSections(pb) {
       }
       for (const row of bodyRows) {
         const want = cjkSet(row[0]);
+        const key = rowKey(row[0]);
+        // 诊断用：字符覆盖率最高的那一行
         let best = 0;
         let bestRow = '';
         for (const cand of detailRows) {
@@ -2884,16 +3070,22 @@ function parsePlaybookSections(pb) {
           const cover = want.size === 0 ? 0 : inter / want.size;
           if (cover > best) { best = cover; bestRow = cand[0]; }
         }
-        if (best < 0.8) {
+        // 真正的判据：类别名与枚举项必须逐项一致
+        const hit = detailRows.find((cand) => {
+          const k = rowKey(cand[0]);
+          return k.label === key.label && sameEnums(k.enums, key.enums);
+        });
+        if (!hit) {
           fail(
             `evals/rubric.md 细则三没有与正文这条对应的行：「${row[0]}」——`
-            + `正文与细则三的扣分口径会分叉（最接近的一行是「${bestRow}」，只覆盖 ${(best * 100).toFixed(0)}%）`,
+            + `正文与细则三的扣分口径会分叉（类别名与括号里的枚举项必须逐项一致；`
+            + `最接近的一行是「${bestRow}」，字符只覆盖 ${(best * 100).toFixed(0)}%）`,
           );
           bad += 1;
         }
       }
     }
-    if (bad === 0) ok('误报口径：正文与细则三逐行对应，且写明同一条候选不叠加扣分');
+    if (bad === 0) ok('误报口径：正文与细则三逐行对应（类别名与枚举项逐项一致），且写明同一条候选不叠加扣分');
   }
 
   // ---------- 49. 归类分母的主口径在 rubric 与 baseline 一致 ----------
@@ -3179,14 +3371,32 @@ function parsePlaybookSections(pb) {
   // 契约的维度数在另一个文件（契约的覆盖表），两边从没对过账。
   // 把 rubric 里两处「覆盖表 15 行」改成「16 行」，lint 全绿：
   // 评分口径说 16 行、契约说 15 行，评测会按错的标准判分。
+  //
+  // 第 24 轮 24A 补的（R24A-07）：
+  //   ① 「覆盖表」与数字之间的间隔此前只允许 ≤3 个字符，写成「覆盖表一共有 15 行」
+  //      （4 个字符）就不再被扫到——这一处从此不与契约对账，而 `hits === 0` 的守卫
+  //      因为别的文件还有命中而不触发。现在放宽到 8 个字符。
+  //   ② 守卫从「全局一句都没扫到」改成**逐处对账**：
+  //      凡「覆盖表」后面紧跟着一个数字（可能是「覆盖表（15 行」这种带括号的），
+  //      这一处就必须能被解析成一句可对账的声明——否则报红，
+  //      不能靠「别的文件还有命中」蒙混过去。
   {
     const bad = [];
     let hits = 0;
+    // 间隔放宽到 8 个字符（原来 ≤3）
+    const DECL_RE = /覆盖表[^0-9\n]{0,8}(\d+)\s*行/g;
+    // 「覆盖表 + 数字」的出现位置：这些地方必须是可对账的声明
+    const POTENTIAL_RE = /覆盖表\s*[（(]?\s*\d+/g;
+    const filesWithHit = new Set();
     for (const rel of evalsScanFiles) {
+      let fileHits = 0;
+      let filePotential = 0;
       for (const l of read(rel)) {
         // 「覆盖表 15 行」「覆盖表（15 行，…）」都算；「13 行覆盖表」是历史记录，不算
-        for (const m of l.matchAll(/覆盖表[^0-9\n]{0,3}(\d+)\s*行/g)) {
+        for (const m of l.matchAll(DECL_RE)) {
           hits += 1;
+          fileHits += 1;
+          filesWithHit.add(rel);
           if (Number(m[1]) !== CANONICAL_DIMENSIONS.length) {
             bad.push(
               `${rel} 写着「覆盖表 ${m[1]} 行」，但契约的覆盖表是 ${CANONICAL_DIMENSIONS.length} 行` +
@@ -3194,6 +3404,21 @@ function parsePlaybookSections(pb) {
             );
           }
         }
+        // 逐处对账：这一处「覆盖表 N」必须真的被解析成声明
+        for (const m of l.matchAll(POTENTIAL_RE)) {
+          filePotential += 1;
+          const tail = l.slice(m.index);
+          if (!DECL_RE.test(tail)) {
+            bad.push(
+              `${rel} 有一处「${m[0]}…」没有写成可对账的「覆盖表 N 行」声明——`
+                + '这一处的行数不再与契约对账，写错了也没人知道',
+            );
+          }
+          DECL_RE.lastIndex = 0;
+        }
+      }
+      if (filePotential > 0 && fileHits === 0) {
+        bad.push(`${rel} 提到了「覆盖表 N」，却没有一处能被解析成「覆盖表 N 行」的声明`);
       }
     }
     if (!hits) {
@@ -3207,7 +3432,7 @@ function parsePlaybookSections(pb) {
     } else {
       ok(
         `各处「覆盖表 N 行」的声明与契约的 ${CANONICAL_DIMENSIONS.length} 个维度一致` +
-          `（扫到 ${hits} 处）`,
+          `（扫到 ${hits} 处，分布在 ${filesWithHit.size} 个文件）`,
       );
     }
   }
@@ -3220,12 +3445,12 @@ function parsePlaybookSections(pb) {
 // 此前第 36 项只查「needClaim 为 true 的形态有没有写这一行」，
 // false 的形态**没人管**——清单里的一个 false 就把这一档的要求悄悄摘掉了。
 //
-// 例外只有一个：**骨架模板**（kind = skeleton）。它整张是空的，示范的是
-// 「要填哪些格子」而不是「一份填好的报告」——「宣称／实际」那一行由模型自己填，
-// 所以骨架不示范它。把它算进守卫，这一项就会对着一份空模板报红。
+// 例外曾经有一个：**骨架模板**（kind = skeleton），理由是「它整张是空的」。
+// 但那个理由只对**覆盖表**成立——骨架的「结论」段并不空，它把范围 / 结论 / 最值得关注的是
+// 三行都摆出来了，却偏偏漏了第五行「宣称／实际」。模型照骨架产出，就缺一整行，
+// 第 1 步的落差对照直接消失（第 24 轮 R24B-03）。所以骨架现在也示范这一行。
 {
   const MARKERS = ['两档都要写', '两档都写', '两档同一条句式'];
-  const TEMPLATE_KINDS = new Set(['skeleton']);
   const skillText = read('SKILL.md').join('\n');
   const hit = MARKERS.filter((m) => skillText.includes(m));
   const bad = [];
@@ -3237,7 +3462,7 @@ function parsePlaybookSections(pb) {
     );
   } else {
     const offenders = EXAMPLE_BLOCKS
-      .filter((e) => e.needClaim === false && !TEMPLATE_KINDS.has(e.kind))
+      .filter((e) => e.needClaim === false)
       .map((e) => `${e.rel}（${e.kind}）`);
     if (offenders.length) {
       bad.push(
@@ -3251,7 +3476,7 @@ function parsePlaybookSections(pb) {
   } else {
     ok(
       `「宣称／实际」行的适用范围与契约一致（契约写「${hit[0]}」，` +
-        '除空模板外所有示例形态都要写这一行）',
+        '所有示例形态都要写这一行）',
     );
   }
 }
@@ -3267,6 +3492,16 @@ function parsePlaybookSections(pb) {
 // 两种表形态都要认：
 //   A) 每轮一列、格子里是「命中/归类」二元组：| GT | 级别 | B | C | 说明 |
 //   B) 命中与归类各占一列：| GT | GT 级别 | 报告 | 命中 | 归类 |
+//
+// 第 24 轮 24A 补的两条（第 24A-01 / R24A-02）：
+//   ① 合计行的分隔符不再只认 `/`（斜杠→逗号也是合法中文写法）；
+//      **「写了合计却认不出」必须报红**——此前是 `continue` 静默跳过整节，
+//      逐条值改错也没人管；而唯一的守卫是「一张都没查到」，少查一张完全无感。
+//      现在分成三类并**逐节计数**：已检查 / 符号表（不参与加总）/ 报红，
+//      三类之和必须等于「逐条对照」小节总数——少查一张再也不可能悄无声息。
+//   ② 比较前先断言**列数一致**、每个取值**确实是数字**：
+//      此前按位置配对，合计行少一列时比较变成 NaN（`NaN >= 0.005` 恒为 false），
+//      那一列的合计从此不再被校验，也不报任何错。
 {
   const baseLines = read('evals/baseline.md');
   const cellSplit = (l) => l.split('|').slice(1, -1).map((x) => x.trim());
@@ -3287,10 +3522,19 @@ function parsePlaybookSections(pb) {
   }
 
   const bad = [];
-  let checked = 0;
+  let checked = 0; // 真正参与加总对账的表
+  let symbolTables = 0; // 不参与加总的符号表（格子里是 G×/— 这类符号，不是分数）
+  let failed = 0; // 报红的表
+  // 合计行的两种分隔符：`／` `/` `，` `,` `、` 都认（斜杠换成逗号也是合法中文写法）
+  const TOTAL_INLINE_RE = /合计[：:]\s*命中\s*(-?[\d.]+)\s*[／\/，,、]\s*归类\s*(-?[\d.]+)/;
+  const TOTAL_WORDS = ['合计', '小计', '总计'];
   for (const sec of sections) {
     const tableRows = sec.body.filter((l) => /^\s*\|/.test(l));
-    if (tableRows.length < 3) continue;
+    if (tableRows.length < 3) {
+      bad.push(`${sec.title}：这一节里没有认出逐条对照表（表体不足 3 行）——数据没人复算`);
+      failed += 1;
+      continue;
+    }
 
     // 认表头
     let header = null;
@@ -3300,10 +3544,16 @@ function parsePlaybookSections(pb) {
       const hi = c.findIndex((x) => x.includes('命中'));
       const ci = c.findIndex((x) => x.includes('归类'));
       if (hi >= 0 && ci >= 0) { header = { kind: 'split', hi, ci }; headerIdx = i; break; }
-      const roundCols = c.map((x, k) => (k >= 2 && /^[A-D]$/.test(x) ? k : -1)).filter((k) => k >= 0);
+      // 轮次列是 A/B/C/D。列位不写死（此前写死 `k >= 2`，
+      // 于是「| GT | A | B | C | 说明 |」这种排法漏掉 A 列）。
+      const roundCols = c.map((x, k) => (k >= 1 && /^[A-D]$/.test(x) ? k : -1)).filter((k) => k >= 0);
       if (roundCols.length >= 1 && c[0].includes('GT')) { header = { kind: 'pair', cols: roundCols }; headerIdx = i; break; }
     }
-    if (!header) continue;
+    if (!header) {
+      bad.push(`${sec.title}：这一节里没有认出逐条对照表的表头——数据没人复算`);
+      failed += 1;
+      continue;
+    }
 
     // 数据行：GT 编号开头
     const dataRows = [];
@@ -3315,7 +3565,18 @@ function parsePlaybookSections(pb) {
       if (!/^(G|R)\d/.test(first)) continue;
       dataRows.push(c);
     }
-    if (!dataRows.length) continue;
+    if (!dataRows.length) {
+      bad.push(`${sec.title}：这一节里没有认出任何逐条数据行——数据没人复算`);
+      failed += 1;
+      continue;
+    }
+
+    // 这一张表是不是「可加总」的分数表？符号表（格子里是 G×/—/G×(0.5)）加总没有意义。
+    const scoreCells = (c) => (header.kind === 'split'
+      ? [c[header.hi], c[header.ci]]
+      : header.cols.map((k) => c[k]));
+    const isScore = (v) => /^[+-]?\d/.test((v || '').replace(/\*\*/g, '').trim());
+    const scoreish = dataRows.some((c) => scoreCells(c).some((v) => isScore(v)));
 
     // 求和
     const computed = [];
@@ -3343,24 +3604,91 @@ function parsePlaybookSections(pb) {
     // 声明的合计
     let declared = null;
     for (const l of sec.body) {
-      const m = l.match(/合计[：:]\s*命中\s*([\d.]+)\s*\/\s*归类\s*([\d.]+)/);
+      const m = l.match(TOTAL_INLINE_RE);
       if (m) { declared = [{ hit: parseFloat(m[1]), cls: parseFloat(m[2]) }]; break; }
     }
     if (!declared) {
       const hitRow = sec.body.find((l) => /^\s*\|/.test(l) && /命中合计/.test(l.split('|')[1] || ''));
       const clsRow = sec.body.find((l) => /^\s*\|/.test(l) && /归类合计/.test(l.split('|')[1] || ''));
       if (hitRow && clsRow) {
-        const vals = (row) => cellSplit(row).slice(2)
-          .map((v) => v.replace(/\*\*/g, '').trim())
-          .map((v) => (v.match(/^([\d.]+)$/) ? parseFloat(v.match(/^([\d.]+)$/)[1]) : null))
-          .filter((v) => v !== null);
-        declared = vals(hitRow).map((h, k) => ({ hit: h, cls: vals(clsRow)[k] }));
+        // 取值：**只裁掉末尾的空列**，中间的空格保留 ——
+        // 此前 filter(v => v !== null) 把中间的空格也滤掉了，
+        // 于是列会错位，而错位之后对不上也不报错。
+        const vals = (row) => {
+          const cells = cellSplit(row).slice(2)
+            .map((v) => v.replace(/\*\*/g, '').trim());
+          while (cells.length && cells[cells.length - 1] === '') cells.pop();
+          return cells.map((v) => {
+            const m = v.match(/^([\d.]+)$/);
+            return m ? parseFloat(m[1]) : null;
+          });
+        };
+        const hitVals = vals(hitRow);
+        const clsVals = vals(clsRow);
+        declared = hitVals.map((h, k) => ({ hit: h, cls: k < clsVals.length ? clsVals[k] : null }));
       }
     }
-    if (!declared) continue;
+
+    const bodyText = sec.body.join('\n');
+    const wroteTotal = TOTAL_WORDS.some((w) => bodyText.includes(w));
+
+    if (!scoreish) {
+      // 符号表：加总没有意义，跳过是合理的——但要**计数**，
+      // 并且「写了合计却认不出」不能被当成符号表悄悄放过。
+      if (wroteTotal && !declared) {
+        bad.push(
+          `${sec.title}：正文里写了「合计」，但认不出合计行——` +
+            '合计行必须能被解析（形如「合计：命中 7.0 / 归类 5.5」或「命中合计 / 归类合计」两行），' +
+            '否则这一节的分数没人复算',
+        );
+        failed += 1;
+      } else {
+        symbolTables += 1;
+      }
+      continue;
+    }
+
+    if (!declared) {
+      bad.push(
+        `${sec.title}：这一节有逐条分数，却没认出合计行——` +
+          (wroteTotal
+            ? '正文里写了「合计」但解析不出来（形如「合计：命中 7.0 / 归类 5.5」或「命中合计 / 归类合计」两行）'
+            : '这一节压根没有合计声明，逐条表必须能自己加出合计') +
+          '，否则第三方复算不出这个分数',
+      );
+      failed += 1;
+      continue;
+    }
+
+    // ---- 断言：列数一致、每个取值确实是数字（不许用 NaN 静默跳过）----
+    if (declared.length !== computed.length) {
+      bad.push(
+        `${sec.title}：合计行的列数（${declared.length}）与逐条表对不上（${computed.length}）——` +
+          '逐条表与合计行必须一一对应，否则有一列的合计从未被校验',
+      );
+      failed += 1;
+      continue;
+    }
+    let cellBad = false;
+    for (let i = 0; i < computed.length; i += 1) {
+      const d0 = declared[i];
+      if (typeof d0.hit !== 'number' || Number.isNaN(d0.hit)
+        || typeof d0.cls !== 'number' || Number.isNaN(d0.cls)) {
+        bad.push(
+          `${sec.title} 的「${computed[i].name}」：合计行里有一列取不到数字` +
+            `（命中=${JSON.stringify(d0.hit)}、归类=${JSON.stringify(d0.cls)}）——` +
+            '这一列的合计从未被校验，也不该被静默跳过',
+        );
+        cellBad = true;
+      }
+    }
+    if (cellBad) {
+      failed += 1;
+      continue;
+    }
 
     checked += 1;
-    for (let i = 0; i < Math.min(computed.length, declared.length); i += 1) {
+    for (let i = 0; i < computed.length; i += 1) {
       const c0 = computed[i];
       const d0 = declared[i];
       if (Math.abs(c0.hit - d0.hit) >= 0.005) {
@@ -3372,14 +3700,104 @@ function parsePlaybookSections(pb) {
     }
   }
 
+  // ---- 表数对账：少查一张再也不可能悄无声息 ----
+  if (checked + symbolTables + failed !== sections.length) {
+    fail(
+      `第 57 项的表数对不上：已检查 ${checked} 张 + 符号表 ${symbolTables} 张 + 报红 ${failed} 张 ` +
+        `≠「逐条对照」小节共 ${sections.length} 节——有一节既没被检查、也没被计入，说明它被静默跳过了`,
+    );
+    bad.push('逐条对照小节的对账计数不一致');
+  }
   if (checked === 0) {
-    fail('第 57 项没认出任何一张逐条对照表——检查项本身失效了（baseline 的「逐条对照」小节名或表结构改了？）');
+    fail('第 57 项没认出任何一张可加总的逐条对照表——检查项本身失效了（baseline 的「逐条对照」小节名或表结构改了？）');
     bad.push('没有可检查的逐条表');
   }
   if (bad.length) {
     fail(`baseline 的逐条对照表与合计行对不上：\n    ${bad.join('\n    ')}\n  逐条表必须能自己加出合计，否则第三方复算不出这个分数`);
   } else {
-    ok(`baseline 的逐条对照表逐行相加与合计行一致（检查了 ${checked} 张表）`);
+    ok(
+      `baseline 的逐条对照表逐行相加与合计行一致（检查了 ${checked}/${sections.length} 张表，` +
+        `另有 ${symbolTables} 张符号表不参与加总）`,
+    );
+  }
+}
+
+// ---------- 59. 规模/性能类的形态清单与例外措辞必须逐项一致 ----------
+// 第 24 轮的两条发现都落在同一处：
+//   R24B-01 —— 降级为 P2 的规模/性能类条目，同一份契约同时要求它写「触发」行和四行制；
+//              设计类早就有对应解法（降为 P2 后保留后果锚点，写在「问题」行），规模/性能类却没有。
+//   R24B-02 —— 闸门表第 2 档（规模关系清楚但说不出 N 的取值）没有对应的字段形态：
+//              原先三种形态每一种都要填一个数字槽，这一档恰恰填不上，而它要计入结论行的 P2，删不掉。
+//
+// 修法是给这类条目定一份**唯一的形态清单**，让四处说同一件事：
+//   SKILL.md 的「触发」字段定义 / references/regression-review.md 的形态清单 /
+//   references/verification.md 的闸门表 / SKILL.md 的「问题」字段定义（降级后锚点落哪一行）。
+//
+// 关键：**逐项比对 token 集合，不只比数量**——数量对而清单错是更隐蔽的漂移
+//（读者看到「四种形态」就以为没问题，实际清单已经不一样了）。
+{
+  const FORMS = [
+    'N=___ 时实测 ___',
+    'N=___ 时随 N ___（缺实测）',
+    'N=（取值待确认）时随 N ___（缺 N 取值）',
+    '调用频率 ___ 时每次触发 N 次 ___（缺实测）',
+  ];
+  const SITES = [
+    { rel: 'SKILL.md', anchor: '**「触发」**：' },
+    { rel: 'references/regression-review.md', anchor: '触发行按 `SKILL.md` 的输出契约写' },
+  ];
+  const bad = [];
+  for (const site of SITES) {
+    const text = read(site.rel).join('\n');
+    if (!text.includes(site.anchor)) {
+      // 守卫自身也要被守：落点措辞一改，这一条就静默失效了
+      bad.push(
+        `${site.rel}：找不到形态清单的落点（${site.anchor.slice(0, 24)}…）——` +
+          '本项的守门位置与契约实际措辞脱钩了，改一处措辞就会静默失效',
+      );
+      continue;
+    }
+    const missing = FORMS.filter((f) => !text.includes(f));
+    if (missing.length) {
+      bad.push(
+        `${site.rel} 的规模/性能类形态清单缺 ${missing.length} 种：${missing.join('、')}——` +
+          '四处必须说同一份清单，数量对而清单错同样算漂移',
+      );
+    }
+  }
+  // 闸门表第 2 档必须写得出自己的形态，否则那一档的条目填不出字段
+  const vf = read('references/verification.md').join('\n');
+  const tier2 = FORMS[2];
+  if (!vf.includes(tier2)) {
+    bad.push(
+      `references/verification.md 的闸门表「规模与复杂度」行没有第 2 档（说不出 N 的取值）的形态「${tier2}」——` +
+        '那一档的条目照契约做填不出字段',
+    );
+  }
+  // 例外限定词：P2 的四行制与规模/性能类的例外，两份文件必须说同一句
+  const EXC = '除规模/性能类外';
+  for (const rel of ['SKILL.md', 'references/regression-review.md']) {
+    if (!read(rel).join('\n').includes(EXC)) {
+      bad.push(
+        `${rel} 里没有「${EXC}」这个限定——` +
+          'P2 的四行制与规模/性能类的例外被写成互斥，两份文件各自少一半',
+      );
+    }
+  }
+  // 规模锚点的落位：未降级在「触发」行，降级为 P2 在「问题」行
+  if (!vf.includes('降级为 P2 写在「问题」行')) {
+    bad.push('references/verification.md 的闸门表没写清规模锚点在降级后落到哪一行');
+  }
+  const skillText = read('SKILL.md').join('\n');
+  if (!skillText.includes('规模/性能类') || !skillText.includes('规模锚点挪到「问题」行')) {
+    bad.push('SKILL.md 的「问题」字段定义里没有规模/性能类的规模锚点落位说明');
+  }
+  if (bad.length) {
+    fail(`规模/性能类的形态清单与例外措辞不一致：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok(
+      `规模/性能类的形态清单与例外措辞一致（${FORMS.length} 种形态 × ${SITES.length} 处声明 + 闸门表 + 落位说明）`,
+    );
   }
 }
 
