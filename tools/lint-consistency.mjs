@@ -741,14 +741,6 @@ function parsePlaybookSections(pb) {
   }
 }
 
-console.log('');
-if (errors > 0) {
-  console.error(`✗ Consistency lint failed: ${errors} error(s)`);
-  process.exit(1);
-}
-console.log('✓ All consistency checks passed');
-
-
 // ---------- 21. 必查项的扩展维度标签必须在该段的覆盖声明里 ----------
 {
   const pb = read('references/playbooks.md');
@@ -777,3 +769,13 @@ console.log('✓ All consistency checks passed');
     ok('playbook 每条必查项的扩展维度标签都在该段覆盖声明里');
   }
 }
+
+// ---------- 22. 本文件末尾才判定退出码 ----------
+// 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
+// CI 照样绿。**加新检查时务必加在这行之前。**
+console.log('');
+if (errors > 0) {
+  console.error(`✗ Consistency lint failed: ${errors} error(s)`);
+  process.exit(1);
+}
+console.log('✓ All consistency checks passed');
