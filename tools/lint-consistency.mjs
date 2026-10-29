@@ -50,6 +50,72 @@ function section(lines, headingRe) {
   return out;
 }
 
+/** 切出所有围栏块（字符串数组），保持出现顺序 */
+function fencedBlocks(lines) {
+  const blocks = [];
+  let cur = null;
+  for (const l of lines) {
+    if (/^\s*```/.test(l)) {
+      if (cur === null) cur = [];
+      else { blocks.push(cur.join('\n')); cur = null; }
+      continue;
+    }
+    if (cur !== null) cur.push(l);
+  }
+  return blocks;
+}
+
+/** 取某个锚点行之后的第一个围栏块（找不到返回 null） */
+function fencedBlockAfter(lines, anchorRe) {
+  const idx = lines.findIndex((l) => anchorRe.test(l));
+  if (idx === -1) return null;
+  let cur = null;
+  for (let i = idx + 1; i < lines.length; i += 1) {
+    if (/^\s*```/.test(lines[i])) {
+      if (cur === null) cur = [];
+      else return cur.join('\n');
+      continue;
+    }
+    if (cur !== null) cur.push(lines[i]);
+  }
+  return null;
+}
+
+/**
+ * 契约文件里的示例块有四类，特征互斥——按特征定位，不要用「第一个匹配」。
+ *   skeleton 骨架：有覆盖表 + 有「## 必须修」，结论行用 n 占位（没有真实计数）
+ *   full     全量示例：有覆盖表 + 有「## 必须修」+ 有 5 项计数
+ *   zero     零发现示例：有覆盖表 + 有 5 项计数，但没有「## 必须修」
+ *   fast     快模式示例：没有覆盖表、没有「## 必须修」、有 5 项计数
+ * 每一类在一个文件里应当恰好命中一块；命中 0 块或 >1 块都算漂移。
+ * 定位不唯一就会出这种事：删掉骨架的「## 必须修」，示例那一处替它兜底，检查照样全绿。
+ */
+const COUNT5_RE = /P0 \d+、P1 \d+、P2 \d+、P3 \d+、待拍板 \d+/;
+const COVERAGE_HEAD = '| 维度 | 结果 | 查了什么 |';
+const BLOCK_KINDS = {
+  skeleton: (b) => b.includes(COVERAGE_HEAD) && /##\s*必须修/.test(b) && !COUNT5_RE.test(b),
+  full: (b) => b.includes(COVERAGE_HEAD) && /##\s*必须修/.test(b) && COUNT5_RE.test(b),
+  zero: (b) => b.includes(COVERAGE_HEAD) && !/##\s*必须修/.test(b) && COUNT5_RE.test(b),
+  fast: (b) => !b.includes(COVERAGE_HEAD) && !/##\s*必须修/.test(b) && COUNT5_RE.test(b),
+};
+
+/** 按特征取块；命中数不等于 1 时返回 null（调用方必须报红，不能默认取第一个） */
+function pickBlock(lines, kind) {
+  const hits = fencedBlocks(lines).filter(BLOCK_KINDS[kind]);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** 按 markdown 标题把文件切成小节，返回每节的正文（不含标题行） */
+function headingSections(lines) {
+  const out = [];
+  let cur = null;
+  for (const l of lines) {
+    if (/^#{1,6}\s/.test(l)) { cur = []; out.push(cur); continue; }
+    if (cur !== null) cur.push(l);
+  }
+  return out.map((s) => s.join('\n'));
+}
+
 /** 取 frontmatter 里某个键的值（支持 `|` 块标量） */
 function frontmatterBlock(lines, key) {
   const start = lines.findIndex((l) => l.startsWith(`${key}:`));
@@ -276,25 +342,31 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
 }
 
 // ---------- 5. 结论计数格式：多处必须逐字相同 ----------
+// 三处都要写明格式：SKILL.md（权威出处）、output-template.md（骨架）、regression-review.md（快模式形态）。
+// 此前只比前两处，而且每处只取**第一个**匹配——同一文件里出现第二种写法也看不见。
 {
   const re = /P0 n、P1 n、P2 n、P3 n、待拍板 n/;
-  const grab = (rel) => {
+  const FILES = ['SKILL.md', 'references/output-template.md', 'references/regression-review.md'];
+  const byFile = new Map();
+  for (const rel of FILES) {
+    const spellings = new Set();
     for (const l of read(rel)) {
       const m = l.match(re);
-      if (m) return m[0];
+      if (m) spellings.add(m[0]);
     }
-    return null;
-  };
-  const found = [
-    ['SKILL.md', grab('SKILL.md')],
-    ['references/output-template.md', grab('references/output-template.md')],
-  ].filter(([, v]) => v);
-  if (found.length < 2) {
-    fail(`结论计数格式只找到 ${found.length} 处（至少 2 处才能比对）`);
-  } else if (new Set(found.map(([, v]) => v)).size > 1) {
-    fail('结论计数格式在文件之间不一致：\n' + found.map(([f, v]) => `    ${f}: ${v}`).join('\n'));
+    byFile.set(rel, spellings);
+  }
+  const missing = FILES.filter((f) => !byFile.get(f).size);
+  const all = [...new Set([...byFile.values()].flatMap((s) => [...s]))];
+  if (missing.length) {
+    fail(`结论计数格式在这些文件里没找到声明：${missing.join('、')}——三处副本都必须写明格式`);
+  } else if (all.length > 1) {
+    fail(
+      '结论计数格式在文件之间不一致：\n' +
+        FILES.map((f) => `    ${f}: ${[...byFile.get(f)].join(' / ')}`).join('\n'),
+    );
   } else {
-    ok(`结论计数格式在 ${found.map(([f]) => f).join(' / ')} 里一致：${found[0][1]}`);
+    ok(`结论计数格式在 ${FILES.join(' / ')} 里一致：${all[0]}`);
   }
 }
 
@@ -487,8 +559,7 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
   };
   const COUNT_RE = /P0 (\d+)、P1 (\d+)、P2 (\d+)、P3 (\d+)、待拍板 (\d+)/;
   // 完整示例 = 有覆盖表 + 有结论计数 + 有「必须修」段（骨架与零发现示例都不算）
-  const isExample = (b) =>
-    b.includes('| 维度 | 结果 | 查了什么 |') && COUNT_RE.test(b) && /##\s*必须修/.test(b);
+  const isExample = (b) => BLOCK_KINDS.full(b);
 
   const readmeBlocks = fencedBlocks(read('README.md')).filter(isExample);
   const tplBlocks = fencedBlocks(read('references/output-template.md')).filter(isExample);
@@ -754,36 +825,33 @@ function parsePlaybookSections(pb) {
 }
 
 // ---------- 19. 示例的结论档必须与正文条目自洽 ----------
+// 全量示例、零发现示例、快模式示例都要验——模型模仿的是快模式，
+// 只查全量示例等于放着模型真正会抄的那份不管。
 {
-  const fencedBlocks = (lines) => {
-    const blocks = [];
-    let cur = null;
-    for (const l of lines) {
-      if (/^\s*```/.test(l)) {
-        if (cur === null) cur = [];
-        else {
-          blocks.push(cur.join('\n'));
-          cur = null;
-        }
-        continue;
-      }
-      if (cur !== null) cur.push(l);
-    }
-    return blocks;
+  const verdictOf = (b) => {
+    // 全量示例写「结论：**方向先定** —— …」；快模式写「**改完再合** —— …」
+    const m =
+      b.match(/结论：\*{0,2}(可以合|改完再合|方向先定)/) ||
+      b.match(/^\s*\**(可以合|改完再合|方向先定)\**\s*[—–]/m);
+    return m ? m[1] : null;
   };
-  const isExample = (b) => b.includes('| 维度 | 结果 | 查了什么 |') && /P0 \d+、P1 \d+、P2 \d+、P3 \d+、待拍板 \d+/.test(b) && /##\s*必须修/.test(b);
-  const blocks = [
-    ...fencedBlocks(read('README.md')).filter(isExample),
-    ...fencedBlocks(read('references/output-template.md')).filter(isExample),
-  ];
+  const blocks = [];
+  for (const lines of [
+    read('README.md'),
+    read('references/output-template.md'),
+    read('references/regression-review.md'),
+  ]) {
+    for (const kind of ['full', 'zero', 'fast']) {
+      for (const b of fencedBlocks(lines).filter(BLOCK_KINDS[kind])) blocks.push(b);
+    }
+  }
   const bad = [];
   for (const b of blocks) {
-    const vm = b.match(/结论：\*{0,2}(可以合|改完再合|方向先定)\*{0,2}/);
-    if (!vm) {
-      bad.push('示例里找不到「结论：**档位**」那一行');
+    const verdict = verdictOf(b);
+    if (!verdict) {
+      bad.push('示例里找不到结论档那一行（形如「结论：**方向先定** —— …」或「**改完再合** —— …」）');
       continue;
     }
-    const verdict = vm[1];
     const p01 = (b.match(/\[P0\]|\[P1\]/g) || []).length;
     const decide = (b.match(/\[待拍板\]/g) || []).length;
     if (verdict === '可以合' && p01 > 0) {
@@ -803,7 +871,7 @@ function parsePlaybookSections(pb) {
         '否则模型照着示例写就会给出与规则相反的头号信号。',
     );
   } else {
-    ok(`示例的结论档与正文条目自洽（${blocks.length} 个示例块）`);
+    ok(`示例的结论档与正文条目自洽（${blocks.length} 个示例块：全量 / 零发现 / 快模式）`);
   }
 }
 
@@ -873,6 +941,11 @@ function parsePlaybookSections(pb) {
 //   - 数量不能硬编码成常量（改了就与 resultRe 脱钩，改 resultRe 它却还在说「一致」）；
 //   - 措辞不能只认「N 种取值」这一种（换个说法就静默失效，而且没有任何提示）。
 // 所以：扫全部声明行 → 找到声明就比数量 → 一个都没找到也要报红（守卫自己失效了）。
+//
+// 还要防两种「看起来在声明、其实不是」的写法：
+//   - 数字换成阿拉伯数字（「5 种取值」写成「5 种」）——量词与数字形态都要认；
+//   - 用一行诱饵顶替权威声明行——**声明了数量就必须把清单列出来**，
+//     只报数字不列清单的，读者无从核对，也无法证明被扫到的那行就是权威出处。
 {
   const files = {
     'SKILL.md': read('SKILL.md'),
@@ -882,23 +955,43 @@ function parsePlaybookSections(pb) {
   };
   const bad = [];
   const seen = [];
-  // 声明行 = 含「取值」二字，且带一个中文数字 + 「种」（措辞不再限定具体动词）
-  const NUM_RE = /([三四五六])\s*种/;
+  // 声明行 = 含「取值」二字，且带一个数字 + 量词（「种 / 类 / 写法 / 形式」）。
+  // 「第 5 种」是序数不是计数，要排除掉。
+  const NUM_RE = /([3-6]|[三四五六])\s*(种|类|写法|形式)/g;
+  const CN = { 三: 3, 四: 4, 五: 5, 六: 6, 3: 3, 4: 4, 5: 5, 6: 6 };
+  const FORM_TOKENS = RESULT_VALUES.map((v) => v.text);
+  const countMatches = (line) =>
+    [...line.matchAll(NUM_RE)].filter((m) => !/第\s*$/.test(line.slice(0, m.index)));
   for (const [name, lines] of Object.entries(files)) {
     for (const [i, l] of lines.entries()) {
       if (!l.includes('取值')) continue;
-      const m = l.match(NUM_RE);
-      if (!m) continue;
-      const CN = { 三: 3, 四: 4, 五: 5, 六: 6 };
+      const counts = countMatches(l);
+      if (!counts.length) continue;
+      const m = counts[0];
+      const n = CN[m[1]];
       seen.push(`${name}:${i + 1}`);
-      if (CN[m[1]] !== ACTUAL_RESULT_COUNT) {
-        bad.push(`${name}:${i + 1} 写着「${m[1]}种取值」，但实际合法取值有 ${ACTUAL_RESULT_COUNT} 种`);
+      if (n !== ACTUAL_RESULT_COUNT) {
+        bad.push(`${name}:${i + 1} 写着「${m[1]}${m[2]}取值」，但实际合法取值有 ${ACTUAL_RESULT_COUNT} 种`);
+      }
+      // 这一行是不是「把清单也列出来」的声明行？
+      const tokens = [...l.matchAll(/`([^`]+)`/g)].map((x) => x[1]);
+      const forms = [];
+      for (const t of tokens) {
+        if (!/n 条|已查（见|未扫（|无发现/.test(t)) continue;
+        if (forms.includes(t)) continue;
+        forms.push(t);
+      }
+      if (forms.length < FORM_TOKENS.length) {
+        bad.push(
+          `${name}:${i + 1} 声明了取值数量却没把清单列全（列出 ${forms.length} 种，应 ${FORM_TOKENS.length} 种）——` +
+            '只报数字不列清单的，读者无从核对；这样也能拿一行诱饵顶替真正的权威声明行。',
+        );
       }
     }
   }
-  // 守卫自身也要被守：4 个文件里，SKILL.md 与 output-template.md 各至少有一处声明被扫到。
-  // 守门条件一改就静默失效的场景，只有靠「必须扫到 N 处」才兜得住。
-  const mustHit = ['SKILL.md', 'references/output-template.md'];
+  // 守卫自身也要被守：三处权威声明出处里，每一处都要有声明被扫到。
+  // 守门条件一改就静默失效的场景，只有靠「必须扫到」才兜得住。
+  const mustHit = ['SKILL.md', 'README.md', 'references/output-template.md'];
   const notHit = mustHit.filter((f) => !seen.some((s) => s.startsWith(`${f}:`)));
   if (notHit.length) {
     bad.push(
@@ -921,13 +1014,12 @@ function parsePlaybookSections(pb) {
   // 数量仍是五种，模型却会以为可以不带级别——而级别正是与结论行对账的唯一钥匙。
   // 所以这里把各处声明里的反引号清单抠出来，与 RESULT_VALUES 逐项比对。
   {
-    const FORM_TOKENS = RESULT_VALUES.map((v) => v.text);
     const listBad = [];
     const checkedFiles = [];
     for (const [name, lines] of Object.entries(files)) {
       for (const [i, l] of lines.entries()) {
         if (!l.includes('取值')) continue;
-        if (!NUM_RE.test(l)) continue;
+        if (!countMatches(l).length) continue;
         // 抠出这一行里所有反引号包裹的 token
         const tokens = [...l.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
         // 只看长得像取值形态的 token（按出现顺序去重）
@@ -981,24 +1073,31 @@ function parsePlaybookSections(pb) {
     return blocks;
   };
   const COUNT_RE = /P0 (\d+)、P1 (\d+)、P2 (\d+)、P3 (\d+)、待拍板 (\d+)/;
-  const isExample = (b) =>
-    b.includes('| 维度 | 结果 | 查了什么 |') && COUNT_RE.test(b) && /##\s*必须修/.test(b);
   const bad = [];
   let checked = 0;
+  // 全量示例、零发现示例、快模式示例都要对账——模型模仿的是快模式，
+  // 只查全量示例等于放着模型真正会抄的那份不管。
   for (const [name, lines] of [
     ['README.md', read('README.md')],
     ['references/output-template.md', read('references/output-template.md')],
+    ['references/regression-review.md', read('references/regression-review.md')],
   ]) {
-    for (const b of fencedBlocks(lines).filter(isExample)) {
-      const c = b.match(COUNT_RE);
-      const declared = { P0: +c[1], P1: +c[2], P2: +c[3], P3: +c[4], 待拍板: +c[5] };
-      // 正文里每条 finding 都有一行以「### [级别]…」开头的标题
-      const actual = { P0: 0, P1: 0, P2: 0, P3: 0, 待拍板: 0 };
-      for (const m of b.matchAll(/^###\s+\[(P0|P1|P2|P3|待拍板)\]/gm)) actual[m[1]] += 1;
-      checked += 1;
-      for (const lv of ['P0', 'P1', 'P2', 'P3', '待拍板']) {
-        if (declared[lv] !== actual[lv]) {
-          bad.push(`${name}：结论行写「${lv} ${declared[lv]}」，正文里数出来是 ${actual[lv]} 条`);
+    for (const kind of ['full', 'zero', 'fast']) {
+      for (const b of fencedBlocks(lines).filter(BLOCK_KINDS[kind])) {
+        const c = b.match(COUNT_RE);
+        if (!c) continue;
+        const declared = { P0: +c[1], P1: +c[2], P2: +c[3], P3: +c[4], 待拍板: +c[5] };
+        // 正文里每条 finding 都有一行以「### [级别]…」或「- [级别]…」开头
+        // （全量模式用标题形态，快模式用列表形态——两种都要数进来）
+        const actual = { P0: 0, P1: 0, P2: 0, P3: 0, 待拍板: 0 };
+        for (const m of b.matchAll(/^(?:#{2,4}\s+|[-*]\s+)\[(P0|P1|P2|P3|待拍板)\]/gm)) actual[m[1]] += 1;
+        checked += 1;
+        for (const lv of ['P0', 'P1', 'P2', 'P3', '待拍板']) {
+          if (declared[lv] !== actual[lv]) {
+            bad.push(
+              `${name}（${kind} 示例）：结论行写「${lv} ${declared[lv]}」，正文里数出来是 ${actual[lv]} 条`,
+            );
+          }
         }
       }
     }
@@ -1031,8 +1130,7 @@ function parsePlaybookSections(pb) {
     return blocks;
   };
   const COUNT_RE = /P0 (\d+)、P1 (\d+)、P2 (\d+)、P3 (\d+)、待拍板 (\d+)/;
-  const isExample = (b) =>
-    b.includes('| 维度 | 结果 | 查了什么 |') && COUNT_RE.test(b) && /##\s*必须修/.test(b);
+  const isExample = (b) => BLOCK_KINDS.full(b);
   const bad = [];
   let checked = 0;
   for (const [name, lines] of [
@@ -1108,8 +1206,7 @@ function parsePlaybookSections(pb) {
     return blocks;
   };
   const COUNT_RE = /P0 (\d+)、P1 (\d+)、P2 (\d+)、P3 (\d+)、待拍板 (\d+)/;
-  const isExample = (b) =>
-    b.includes('| 维度 | 结果 | 查了什么 |') && COUNT_RE.test(b) && /##\s*必须修/.test(b);
+  const isExample = (b) => BLOCK_KINDS.full(b);
   const RULES = [
     { section: '必须修', allow: ['P0', 'P1'] },
     { section: '建议修', allow: ['P2', 'P3'] },
@@ -1161,7 +1258,12 @@ function parsePlaybookSections(pb) {
     const cells = l.split('|').map((c) => c.trim());
     const [, type, must, fallback] = cells;
     if (!type) continue;
-    if (!must || must.length < 4) bad.push(`闸门表「${type}」行的「必须回答」列为空`);
+    if (!must || must.length < 4) {
+      bad.push(`闸门表「${type}」行的「必须回答」列为空`);
+    } else if (!must.includes('？')) {
+      // 只测长度会被「见下表。」这种占位糊过去——判据被清空，正是「不要用措辞掩盖不确定」的反面
+      bad.push(`闸门表「${type}」行的「必须回答」列一个问句都没有（内容是「${must}」）——这一列必须是问句`);
+    }
     // 「答不上来怎么办」允许为空——有些结论类型没有降级路径（答不上就删），
     // 那一列写的是「删」这个动作本身，仍然要非空。
     if (!fallback || fallback.length < 1) bad.push(`闸门表「${type}」行的「答不上来怎么办」列为空`);
@@ -1197,8 +1299,33 @@ function parsePlaybookSections(pb) {
 //           （「它是协议固定值还是业务政策值？若业务政策值：必须随 ___ 变化；不改时会 ___。」
 //            是 2 个占位 + 1 个问句 = 3 问，与闸门表的 3 问对齐）。
 // 所以必答句的问数 = 「___」个数 + 「？」个数。
+//
+// 配对方式也不能靠「包含关系」——`'过度设计'.includes('设计')` 成立，
+// 「设计」必答句会被配到「过度设计」那一行；改「过度设计」的行会报一条指向「设计」的错，
+// 按提示去改的人会去改错的那条必答句。现在用**显式映射**配对：标签 → 闸门表「结论类型」列的原文。
+// 配不上的标签直接报红——必答句是副本，副本里多出一条判据表没有的问题，同样是漂移。
 {
   const verif = read('references/verification.md');
+  const MUST_ANSWER_TO_GATE = {
+    设计: '设计不合理',
+    缺参数: '缺参数/缺省有歧义',
+    跨层形状: '跨层形状',
+    实现: '实现 bug',
+    规模: '规模与复杂度',
+    并发: '并发问题',
+    硬编码: '硬编码',
+    重复: '重复（真重复）',
+    语义分裂: '语义分裂',
+    职责重叠: '职责重叠',
+    文档: '文档不清',
+    过度设计: '过度设计',
+    安全: '安全问题',
+    兼容性: '兼容性问题',
+    错误路径与部分失败: '错误路径与部分失败',
+    可观测性: '可观测性',
+    性能: '性能',
+    测试盲区: '测试盲区',
+  };
   const gateRows = verif
     .filter((l) => /^\|\s*[^-|].*\|.*\|.*\|$/.test(l) && !/^\|\s*结论类型/.test(l))
     .map((l) => l.split('|').map((c) => c.trim()));
@@ -1206,18 +1333,37 @@ function parsePlaybookSections(pb) {
     .filter((l) => /^\s*-\s/.test(l))
     .map((l) => l.replace(/^\s*-\s*/, ''));
   const bad = [];
+  const labels = new Set();
   for (const b of bullets) {
     const idx = b.indexOf('：');
     if (idx === -1) continue;
     const label = b.slice(0, idx).trim();
+    labels.add(label);
+    const gateType = MUST_ANSWER_TO_GATE[label];
+    if (!gateType) {
+      bad.push(
+        `必答句「${label}」在闸门表里找不到对应行——必答句是闸门表的速查副本，` +
+          '多出来的一条判据没人认账；请给它在闸门表里补一行，并在本文件的映射表里补上对应关系',
+      );
+      continue;
+    }
+    const row = gateRows.find((r) => r[1] === gateType);
+    if (!row) {
+      bad.push(`必答句「${label}」对应的闸门行「${gateType}」在闸门表里不存在——闸门行改了名，映射表要跟着改`);
+      continue;
+    }
+    const gateQ = (row[2] || '').split('？').length - 1;
     const body = b.slice(idx + 1);
-    // 闸门表里对应的行：类型名与必答句标签相同或相近（取子问最多的那行）
-    const cands = gateRows.filter((r) => r[1] && (r[1].includes(label) || label.includes(r[1])));
-    if (!cands.length) continue;
-    const gateQ = Math.max(...cands.map((r) => (r[2] || '').split('？').length - 1));
     const bulletQ = (body.match(/___/g) || []).length + (body.match(/？/g) || []).length;
     if (bulletQ < gateQ) {
-      bad.push(`必答句「${label}」只覆盖 ${bulletQ} 问，闸门表那一行问了 ${gateQ} 问`);
+      bad.push(`必答句「${label}」只覆盖 ${bulletQ} 问，闸门表「${gateType}」那一行问了 ${gateQ} 问`);
+    }
+  }
+  // 反向：映射表里有的标签，必答句清单与闸门表都得真的在
+  for (const [label, gateType] of Object.entries(MUST_ANSWER_TO_GATE)) {
+    if (!labels.has(label)) bad.push(`映射表里的必答句「${label}」在必答句清单里不存在（对应闸门行「${gateType}」）`);
+    if (!gateRows.some((r) => r[1] === gateType)) {
+      bad.push(`映射表指向的闸门行「${gateType}」在闸门表里不存在`);
     }
   }
   if (bad.length) {
@@ -1226,13 +1372,19 @@ function parsePlaybookSections(pb) {
         '必答句是闸门表的速查副本——副本少问的那一问，模型照着副本走就不会问。',
     );
   } else {
-    ok('必答句覆盖的问数都不少于闸门表对应行');
+    ok(`必答句覆盖的问数都不少于闸门表对应行（${bullets.length} 句，按显式映射逐句配对）`);
   }
 }
 
 // ---------- 28. finding 的字段名必须固定 ----------
 // 契约写「每条 finding 的字段固定」，但此前没有任何检查比对字段名：
 // 把骨架里的「- 证据：」改成「- 依据：」，全绿。字段名一漂，按字段解析报告的人就读不到了。
+//
+// 此前 SKILL.md 那一侧只做「整文件子串存在性」——「触发」「建议」这类词在散文里到处都是，
+// 把整个字段定义块删掉它照样报「一致」。现在两侧都从**定义处**抽出字段名序列再逐项比：
+//   - 骨架块：按 `- 字段：` 形态抽
+//   - SKILL.md：「必须修」「建议修」各有自己的 fenced 块，按 `- 字段：` 形态抽；
+//     「需要你拍板」的六字段写在七段结构那一行（顿号形态），按「每条给…」之后切
 {
   const EXPECTED = {
     '必须修': ['触发', '影响', '证据', '修法'],
@@ -1240,23 +1392,11 @@ function parsePlaybookSections(pb) {
     '需要你拍板': ['现状', '证据', '路线 A', '路线 B', '建议', '要你定'],
   };
   const bad = [];
-  // 骨架里的三段 finding 模板
+  // ---- 骨架侧 ----
   const tpl = read('references/output-template.md');
-  const fenced = [];
-  {
-    let cur = null;
-    for (const l of tpl) {
-      if (/^\s*```/.test(l)) {
-        if (cur === null) cur = [];
-        else { fenced.push(cur.join('\n')); cur = null; }
-        continue;
-      }
-      if (cur !== null) cur.push(l);
-    }
-  }
-  const skeleton = fenced.find((b) => b.includes('## 必须修') && b.includes('## 建议修') && b.includes('## 需要你拍板'));
+  const skeleton = pickBlock(tpl, 'skeleton');
   if (!skeleton) {
-    bad.push('output-template.md 的骨架里找不到三段 finding 模板');
+    bad.push('output-template.md 的骨架块定位失败（应当恰好一块）——字段名无从校验');
   } else {
     for (const [section, fields] of Object.entries(EXPECTED)) {
       const start = skeleton.indexOf(`## ${section}`);
@@ -1269,29 +1409,54 @@ function parsePlaybookSections(pb) {
       }
     }
   }
-  // SKILL.md 的字段定义必须同样齐全。拍板六字段在 SKILL.md 里是「现状、证据、路线 A…」的顿号写法，
-  // 不带冒号——所以这里按字段名本身出现来查，不限定 `- 字段：` 的形态。
+  // ---- SKILL.md 侧（权威出处）----
   const skill = read('SKILL.md');
-  for (const fields of Object.values(EXPECTED)) {
-    for (const f of fields) {
-      if (!skill.some((l) => l.includes(f))) {
-        bad.push(`SKILL.md 的字段定义里找不到「${f}」`);
-      }
+  const skillFields = (anchor) => {
+    const blk = fencedBlockAfter(skill, anchor);
+    if (!blk) return null;
+    return [...blk.matchAll(/^-\s+([^：\n]+)：/gm)].map((m) => m[1].trim());
+  };
+  for (const [section, anchor] of [
+    ['必须修', /^「必须修」/],
+    ['建议修', /^「建议修」/],
+  ]) {
+    const got = skillFields(anchor);
+    if (got === null) {
+      bad.push(`SKILL.md 的字段定义里找不到「${section}」那一段（行首形如「${section}」（…）：」）`);
+      continue;
+    }
+    if (got.join('|') !== EXPECTED[section].join('|')) {
+      bad.push(`SKILL.md「${section}」的字段定义是 [${got.join(', ')}]，应为 [${EXPECTED[section].join(', ')}]`);
+    }
+  }
+  // 「需要你拍板」的六字段在七段结构那一行，顿号形态
+  const decideLine = skill.find((l) => l.includes('需要你拍板') && l.includes('每条给'));
+  if (!decideLine) {
+    bad.push('SKILL.md 的七段结构里找不到「需要你拍板」的字段定义（形如「每条给现状、证据、路线 A、路线 B、建议、要你定」）');
+  } else {
+    const raw = decideLine.match(/每条给([^）]+)/);
+    const got = raw ? raw[1].split('、').map((s) => s.trim()).filter(Boolean) : [];
+    if (got.join('|') !== EXPECTED['需要你拍板'].join('|')) {
+      bad.push(`SKILL.md「需要你拍板」的字段定义是 [${got.join(', ')}]，应为 [${EXPECTED['需要你拍板'].join(', ')}]`);
     }
   }
   if (bad.length) {
     fail(
       `finding 的字段名不固定：\n    ${bad.join('\n    ')}\n` +
-        '契约写死「每条 finding 的字段固定」——字段名一漂，按字段解析报告的复核链就断了。',
+        '契约写死「每条 finding 的字段固定」——字段名一漂，按字段解析报告的复核链就断了。' +
+        'SKILL.md 是权威出处（字段以本节为准），模板只是骨架，两边必须逐项相同。',
     );
   } else {
-    ok('finding 的字段名在三段模板与 SKILL.md 定义里一致');
+    ok('finding 的字段名在骨架模板与 SKILL.md 定义里逐项一致');
   }
 }
 
 // ---------- 29. 「已查过没问题」的准入门槛在各副本里必须一致 ----------
 // 这条门槛写在三处（SKILL.md / output-template.md / verification.md），
 // 此前谁改谁漂，且被指定的基准（output-template）自己先漂也没人管。
+//
+// 判定按**小节**而不是按行：按行找门槛句，编辑器把长句折成两行就会报「各副本不一致」，
+// 而内容一个字都没改；按小节找，被搬走整句也拦不住（内容还在，搬走不算漂移）。
 {
   const TOKENS = ['跑了测试', '构造了复现', '对比了 base', '专门证伪'];
   const sources = [
@@ -1301,11 +1466,14 @@ function parsePlaybookSections(pb) {
   ];
   const bad = [];
   for (const [name, lines] of sources) {
-    const hit = lines.find((l) => l.includes('准入门槛') || (l.includes('跑了测试') && l.includes('构造了复现')));
-    if (!hit) { bad.push(`${name}：找不到「已查过没问题」的准入门槛表述`); continue; }
-    for (const t of TOKENS) {
-      if (!hit.includes(t)) bad.push(`${name}：准入门槛缺少「${t}」`);
-    }
+    const secs = headingSections(lines);
+    const hit = secs.find((s) => TOKENS.every((t) => s.includes(t)));
+    if (hit) continue;
+    const missing = TOKENS.filter((t) => !secs.some((s) => s.includes(t)));
+    bad.push(
+      `${name}：准入门槛缺少「${missing.join('、')}」` +
+        `（四个 token 必须出现在同一小节里——门槛被拆散就不再是「四选一」了）`,
+    );
   }
   if (bad.length) {
     fail(
@@ -1320,25 +1488,43 @@ function parsePlaybookSections(pb) {
 // ---------- 30. 结论行不能出现第 6 个计数 ----------
 // 契约明写「不要为『需确认』新增一个计数」，但 lint 的计数正则此前是子串匹配，
 // 结论行尾部挂上「、需确认 2」照样全绿。
+//
+// 判定也不能只认「行首是结论：」那种形态——快模式的结论行写成
+// 「**改完再合** —— P0 0、P1 1、…」，压根不以「结论」开头，两档模式一快一慢就漏掉一档。
+// 现在：**任何带 5 项计数的行**都受「不许有第 6 个计数」约束；
+// 「计数之后不许有多余内容」这条更严的约束只对真正的结论行生效
+//（行里出现结论档「可以合 / 改完再合 / 方向先定」）。
 {
   const bad = [];
   const files = [
     ['SKILL.md', read('SKILL.md')],
     ['references/output-template.md', read('references/output-template.md')],
+    ['references/regression-review.md', read('references/regression-review.md')],
     ['README.md', read('README.md')],
   ];
   for (const [name, lines] of files) {
     for (const [i, l] of lines.entries()) {
-      // 只看「结论行」——即带结论计数、且以「结论」二字开头或含结论档的那一行
-      const isConclusionLine = /^\s*(?:[-*]\s*)?\**结论[：:]/.test(l) || /结论：\*/.test(l);
+      const m = l.match(/P0 \d+、P1 \d+、P2 \d+、P3 \d+、待拍板 \d+/);
+      if (!m) continue;
+      const after = l.slice(m.index + m[0].length);
+      // 第 6 个计数：紧跟在五项计数之后的那一段里挂着「、xxx N」
+      const seg = after.split(/[。；]/)[0];
+      if (/、\s*[^、，。；：）\s]{1,10}\s*\d/.test(seg)) {
+        bad.push(
+          `${name}:${i + 1} 五项计数之后还挂着第 6 个计数：「${seg.trim()}」——计数只有 P0–P3 与待拍板五项`,
+        );
+      }
+      if (/需确认\s*\d/.test(l)) bad.push(`${name}:${i + 1} 结论行出现了「需确认」计数`);
+      // 「计数之后不许有多余内容」这条只对真正的结论行生效：
+      // 判据 = 行首就是「结论：」或一个加粗的结论档（**改完再合** —— …）。
+      // SKILL.md 里那些引用计数格式的正文（行首是「当…时」）不在此列。
+      const isConclusionLine =
+        /^\s*(?:[-*]\s*)?\**结论[：:]/.test(l) || /^\s*\**(可以合|改完再合|方向先定)\**\s*[—–-]/.test(l);
       if (!isConclusionLine) continue;
-      if (!/P0 \d+、P1 \d+、P2 \d+、P3 \d+、待拍板 \d+/.test(l)) continue;
-      const m = l.match(/P0 \d+、P1 \d+、P2 \d+、P3 \d+、待拍板 \d+(.*)$/);
-      const tail = (m[1] ?? '').trim();
+      const tail = after.trim();
       if (!/^[。.]?$/.test(tail)) {
         bad.push(`${name}:${i + 1} 结论计数之后还有多余内容「${tail}」——计数只有 P0–P3 与待拍板五项`);
       }
-      if (/需确认\s*\d/.test(l)) bad.push(`${name}:${i + 1} 结论行出现了「需确认」计数`);
     }
   }
   if (bad.length) {
@@ -1347,7 +1533,7 @@ function parsePlaybookSections(pb) {
         '「需确认」是降级后的 P2，不是独立档位——给它单独计数，「P2 n」和「待拍板 n」的口径就稀释了。',
     );
   } else {
-    ok('结论行只有 P0–P3 与待拍板五项计数，没有第 6 个档位');
+    ok('结论行只有 P0–P3 与待拍板五项计数，没有第 6 个档位（带计数的行都受约束）');
   }
 }
 
@@ -1362,6 +1548,10 @@ function parsePlaybookSections(pb) {
   ];
   const ORIGIN = ['本次引入', '既有', '现状'];
   const LEVELS = ['P0', 'P1', 'P2', 'P3', '待拍板'];
+  // 只有「级别开头」才算 finding 标签。此前任何相邻的 [X][Y] 都被当标签——
+  // markdown 的引用式链接（[文字][fast-mode]）被说成「维度段 fast-mode 不合法」。
+  // 级别写成 P4 这类错值仍要报出来，所以「像不像级别」按形态判，不按合法值判。
+  const LEVEL_LIKE = /^(P\d+|待拍板|级别)$/;
   const offenders = [];
   let count = 0;
   for (const f of files) {
@@ -1371,6 +1561,14 @@ function parsePlaybookSections(pb) {
       while ((m = re.exec(l)) !== null) {
         const [, level, dim, origin] = m;
         if (level === '级别' && dim === '维度') continue; // 占位符模板，不是真标签
+        if (!LEVEL_LIKE.test(level)) {
+          // 不是级别开头，多半是 markdown 链接，不当标签——
+          // 但「维度][引入方式]」这种漏了级别段的写法仍然要报出来
+          if (CANONICAL_DIMENSIONS.includes(level) && ORIGIN.includes(dim)) {
+            offenders.push(`${f}: 标签「${level}[${dim}]」漏了级别段（形态固定三段）`);
+          }
+          continue;
+        }
         count += 1;
         if (!CANONICAL_DIMENSIONS.includes(dim)) {
           offenders.push(`${f}: 维度段「${dim}」不在规范维度名里（${level}[${dim}]）`);
@@ -1396,23 +1594,16 @@ function parsePlaybookSections(pb) {
 // ---------- 32. 七段结构检查必须落在骨架块内 ----------
 // 此前在整个 output-template.md 里找标题——示例块也有同名小节，
 // 删掉骨架里的「## 必须修」，示例那一处替它兜底，检查照样全绿。
+// 现在按**互斥特征**定位骨架（有覆盖表 + 有「## 必须修」+ 结论行是 n 占位），
+// 并且要求恰好命中一块：命中 0 块或 >1 块都报红，不能默默取第一个。
 {
   const tpl = read('references/output-template.md');
-  const blocks = [];
-  {
-    let cur = null;
-    for (const l of tpl) {
-      if (/^\s*```/.test(l)) {
-        if (cur === null) cur = [];
-        else { blocks.push(cur.join('\n')); cur = null; }
-        continue;
-      }
-      if (cur !== null) cur.push(l);
-    }
-  }
-  const skeleton = blocks.find((b) => b.includes('| 维度 | 结果 | 查了什么 |') && b.includes('## 必须修'));
+  const skeleton = pickBlock(tpl, 'skeleton');
   if (!skeleton) {
-    fail('output-template.md 的骨架块里找不到覆盖表与「必须修」段——七段结构无从校验');
+    fail(
+      'output-template.md 的骨架块定位失败（应当恰好一块：有覆盖表 + 有「## 必须修」+ 结论行用 n 占位）——' +
+        '七段结构无从校验。若骨架的结论行被填成了真实数字，它就会和示例块混成一类，请把骨架改回 n 占位。',
+    );
   } else {
     const EXPECTED = ['结论', '维度覆盖', '必须修', '建议修', '需要你拍板', '已查过没问题', '本次没覆盖'];
     const idx = [];
@@ -1581,7 +1772,126 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 37. 本文件末尾才判定退出码 ----------
+// ---------- 37. playbook 的命中判据与多命中规则必须说清且说一致 ----------
+// 「先认改动类型」这一步一旦没有判据，「跑该类型 playbook 的必查项」就没有确定范围：
+// 只读一节就等于其余那几节覆盖的维度归零（安全只在「配置 / 部署 / 脚本」里被覆盖）。
+// 所以：载体判据表要覆盖每一节 playbook，三处都要写明「命中几节跑几节、必查项取并集」。
+{
+  const bad = [];
+  const pb = read('references/playbooks.md');
+  // playbook 的小节（## 标题）
+  const sections = pb.filter((l) => /^##\s/.test(l)).map((l) => l.replace(/^##\s+/, '').trim());
+  // 载体判据表：表头是「类型 | 载体…」
+  const carrierRows = [];
+  let inTable = false;
+  for (const l of pb) {
+    if (/^\|\s*类型\s*\|/.test(l)) { inTable = true; continue; }
+    if (!inTable) continue;
+    if (!l.trim().startsWith('|')) break;
+    if (/^\|\s*[-: ]+\|/.test(l)) continue;
+    const cells = l.split('|').slice(1, -1).map((c) => c.trim());
+    if (cells.length >= 2) carrierRows.push(cells);
+  }
+  if (!carrierRows.length) {
+    bad.push('references/playbooks.md：找不到「命中怎么认」的载体判据表');
+  } else {
+    for (const sec of sections) {
+      const row = carrierRows.find((r) => r[0] === sec);
+      if (!row) {
+        bad.push(`playbooks.md 的「${sec}」一节没有出现在载体判据表里——命中不了这一节，它的必查项就永远不会被跑`);
+      } else if (!row[1]) {
+        bad.push(`载体判据表里「${sec}」那一行没写载体`);
+      }
+    }
+    for (const row of carrierRows) {
+      if (!sections.includes(row[0])) bad.push(`载体判据表里有一行「${row[0]}」，但 playbooks.md 里没有这一节`);
+    }
+  }
+  // 三处都要写明多命中规则
+  const REQS = [
+    ['references/playbooks.md', ['命中怎么认', '命中几节就跑几节', '必查项取并集', '一节都不命中才不跑']],
+    ['SKILL.md', ['命中的那几节', '命中几节跑几节', '必查项取并集']],
+    ['references/regression-review.md', ['命中几节跑几节', '必查项取并集', '一节都不命中就不跑']],
+  ];
+  for (const [rel, toks] of REQS) {
+    const text = read(rel).join('\n');
+    for (const t of toks) if (!text.includes(t)) bad.push(`${rel}：没有写明「${t}」`);
+  }
+  if (bad.length) {
+    fail(
+      `playbook 的命中判据或多命中规则没说清：\n    ${bad.join('\n    ')}\n` +
+        '「命中」没有判据，「跑该类型 playbook 的必查项」就没有确定范围——漏跑一节，那一节覆盖的维度就归零。',
+    );
+  } else {
+    ok(
+      `playbook 的命中判据覆盖 ${sections.length} 节，且「命中几节跑几节、取并集」在 playbooks / SKILL.md / regression-review 三处一致`,
+    );
+  }
+}
+
+// ---------- 38. 「第 N 维的「X」」类指针必须能在 dimensions.md 里解析到 ----------
+// 契约里说「读第 5、6 维的『不算』两节」时，模型是照着这句话去找的。
+// 第 6 维根本没有叫「不算」的小节——指针落空，模型要么跳过（丢掉 tie-break 判据），
+// 要么整节照读（违背「最小子集」的用意）。所以指针必须指向真实存在的小节或条目。
+{
+  const dim = read('references/dimensions.md');
+  const sections = [];
+  let cur = null;
+  for (const l of dim) {
+    const m = l.match(/^##\s+(.*)$/);
+    if (m) { cur = { title: m[1].trim(), body: [] }; sections.push(cur); continue; }
+    if (cur) cur.body.push(l);
+  }
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const resolves = (body, anchor) =>
+    body.some(
+      (l) =>
+        l.includes(`**${anchor}`) ||
+        new RegExp(`^[-*]\\s*${esc(anchor)}\\s*[：:]`).test(l) ||
+        new RegExp(`^${esc(anchor)}\\s*[：:]`).test(l),
+    );
+  const bad = [];
+  const sources = [
+    ['SKILL.md', read('SKILL.md')],
+    ['README.md', read('README.md')],
+    ...['dimensions', 'playbooks', 'verification', 'regression-review', 'output-template'].map((n) => [
+      `references/${n}.md`,
+      read(`references/${n}.md`),
+    ]),
+  ];
+  let checked = 0;
+  for (const [name, lines] of sources) {
+    for (const [i, l] of lines.entries()) {
+      const re = /第\s*([1-7])\s*维的「([^」]+)」/g;
+      let m;
+      while ((m = re.exec(l)) !== null) {
+        checked += 1;
+        const n = m[1];
+        const anchor = m[2];
+        const sec = sections.find((s) => s.title.startsWith(`${n}.`));
+        if (!sec) {
+          bad.push(`${name}:${i + 1} 指向「第 ${n} 维」，但 dimensions.md 里没有第 ${n} 维`);
+          continue;
+        }
+        if (!resolves(sec.body, anchor)) {
+          bad.push(
+            `${name}:${i + 1} 指向「第 ${n} 维的「${anchor}」」，但 dimensions.md 第 ${n} 维里找不到「${anchor}」这一节或这一条`,
+          );
+        }
+      }
+    }
+  }
+  if (bad.length) {
+    fail(
+      `维度指针落空：\n    ${bad.join('\n    ')}\n` +
+        '契约里写「读第 N 维的『X』」时，模型是照这句话去找的——指针落空，判据就被跳过了。',
+    );
+  } else {
+    ok(`第 N 维的指针都能在 dimensions.md 里解析到（检查了 ${checked} 处指针）`);
+  }
+}
+
+// ---------- 39. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
 console.log('');

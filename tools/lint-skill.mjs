@@ -11,7 +11,7 @@
 //      本脚本先统一换行再解析，并把 CRLF 本身列为错误（.gitattributes 已要求 LF）。
 //   3. 本脚本随仓库走，CI 与贡献者本地跑的是同一份，不依赖运行环境。
 
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, basename, resolve } from 'node:path';
 
 const FORBIDDEN_FRONTMATTER_KEYS = ['allowed-tools', 'license', 'model'];
@@ -22,11 +22,27 @@ const MAX_DESCRIPTION_CHARS = 1024;
 
 // 成品里不出现相对表述：提一次「内置」，这个 skill 就始终是相对于别的东西定义的。
 // 这条规矩以前靠人工 grep 守，容易漏——机器化之后它就退不回去了。
-// 词表覆盖同义说法：光拦「内置」，换个「自带」「预置」就绕过去了。
+//
+// 但「内置 / 自带 / 预置」在技术语境里是常用词（「语言自带的排序函数」「预置的超时」）——
+// 裸词一拦，贡献者写一句技术事实就被 CI 红，而提示语在这类语境里根本不适用。
+// 所以分两类：
+//   - 无歧义的相对说法（「别的工具」「官方那套」）：一律拦。
+//   - 「内置 / 自带 / 预置」：只在它指的是**另一个工具**时才拦——
+//     修饰工具类名词，或出现在比较句式里。
 const RELATIVE_PHRASES = [
-  '内置', '别的工具', '第二个工具',
-  '自带', '预置', '随运行时', '官方那套',
+  '别的工具', '另一个工具', '第二个工具', '官方那套', '随运行时',
 ];
+const CONTEXTUAL_PHRASES = ['内置', '自带', '预置'];
+const TOOL_NOUNS = ['code-review', '审查器', '审查', '工具', '那套', '这套'];
+const COMPARISON_MARKERS = ['相比', '不如', '强于', '胜过', '比得上'];
+const CONTEXTUAL_RE = new RegExp(
+  `(${CONTEXTUAL_PHRASES.join('|')})(的\\s*)?\\s*(${TOOL_NOUNS.join('|')})`,
+);
+const COMPARISON_RE = new RegExp(
+  `(${CONTEXTUAL_PHRASES.join('|')})[^。；\\n]{0,20}?(${COMPARISON_MARKERS.join('|')})`,
+);
+// 扫描范围：契约文件、评测文档，以及仓库根下的其他 .md（CONTRIBUTING / AGENTS / CHANGELOG）。
+// evals 只扫一层——evals/fixtures/ 下是被审样本，不是成品。
 const RELATIVE_PHRASE_SCOPE = ['SKILL.md', 'README.md', 'references', 'evals'];
 
 let errors = 0;
@@ -218,33 +234,57 @@ if (existsSync(refDir)) {
 // --- 相对表述 ---
 // skill 必须自述能力，不靠对比定义。跨工具的选型说明属于「给人看的」，但也不该用
 // 「内置 X」这种措辞——正确做法是让本 skill 覆盖那件事，而不是比较谁更强。
-function collectFiles(rel) {
-  const abs = join(dir, rel);
-  if (!existsSync(abs)) return [];
-  return readdirSync(abs)
-    .filter((f) => f.endsWith('.md'))
-    .map((f) => join(abs, f));
+//
+// 扫描范围由 RELATIVE_PHRASE_SCOPE 声明（常量不再是死代码）：范围内的目录扫一层，
+// 仓库根下的其他 .md（CONTRIBUTING / AGENTS / CHANGELOG）也算成品。
+// evals 只扫一层——evals/fixtures/ 下是被审样本，不是成品。
+function phraseScopeTargets() {
+  const out = [];
+  for (const rel of RELATIVE_PHRASE_SCOPE) {
+    const abs = join(dir, rel);
+    if (!existsSync(abs)) continue;
+    if (statSync(abs).isDirectory()) {
+      for (const f of readdirSync(abs)) {
+        if (!f.endsWith('.md')) continue;
+        const p = join(abs, f);
+        if (statSync(p).isFile()) out.push(p);
+      }
+    } else {
+      out.push(abs);
+    }
+  }
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.md')) continue;
+    if (RELATIVE_PHRASE_SCOPE.includes(f)) continue;
+    const p = join(dir, f);
+    if (statSync(p).isFile()) out.push(p);
+  }
+  return out;
 }
 
-const phraseTargets = [
-  ...(existsSync(join(dir, 'SKILL.md')) ? [join(dir, 'SKILL.md')] : []),
-  ...(existsSync(join(dir, 'README.md')) ? [join(dir, 'README.md')] : []),
-  ...collectFiles('references'),
-  ...collectFiles('evals'),
-];
+const phraseTargets = phraseScopeTargets();
 
 let phraseHits = 0;
 for (const f of phraseTargets) {
   const lines = readText(f).split('\n');
   lines.forEach((line, i) => {
+    const hit = (phrase) => {
+      fail(
+        `${f.replace(dir + '/', '')}:${i + 1} 含相对表述「${phrase}」。` +
+          '成品要自述能力，不要靠与别的东西比较来定义——改写成本 skill 自己的说法。',
+      );
+      phraseHits += 1;
+    };
     for (const phrase of RELATIVE_PHRASES) {
-      if (line.includes(phrase)) {
-        fail(
-          `${f.replace(dir + '/', '')}:${i + 1} 含相对表述「${phrase}」。` +
-            '成品要自述能力，不要靠与别的东西比较来定义——改写成本 skill 自己的说法。',
-        );
-        phraseHits += 1;
-      }
+      if (line.includes(phrase)) hit(phrase);
+    }
+    // 「内置 / 自带 / 预置」只在指向另一个工具时才算相对表述——
+    // 「语言自带的排序函数」是技术事实，不该被拦。
+    const cm = line.match(CONTEXTUAL_RE);
+    if (cm) hit(cm[0]);
+    else {
+      const cp = line.match(COMPARISON_RE);
+      if (cp) hit(cp[0]);
     }
   });
 }
