@@ -1,3 +1,7 @@
 .DS_Store
 Thumbs.db
 *.log
+
+# 评测原始输出（每轮一份全文）不入版本控制——评审全文本身就是答案。
+# 正确做法见 evals/runbook.md 的「归档」一节：放仓外绝对路径。
+scratchpads/
