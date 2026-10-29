@@ -151,6 +151,7 @@ git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep
 
 范围：feature/rate-limit 相对 main 的 7 个文件（merge-base a1b2c3d）。
 结论：方向先定 —— P0 0、P1 2、P2 1、P3 0、待拍板 1。
+最值得关注的是 Redis 出错时限流器选择放行全部请求，故障期间等于没有限流。
 宣称：Redis 超时时降级为本地计数 ／ 实际：Redis 超时时把错误当成「未限流」，放行全部请求。
 
 ## 维度覆盖
