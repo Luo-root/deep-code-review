@@ -22,7 +22,11 @@ const MAX_DESCRIPTION_CHARS = 1024;
 
 // 成品里不出现相对表述：提一次「内置」，这个 skill 就始终是相对于别的东西定义的。
 // 这条规矩以前靠人工 grep 守，容易漏——机器化之后它就退不回去了。
-const RELATIVE_PHRASES = ['内置', '别的工具', '第二个工具'];
+// 词表覆盖同义说法：光拦「内置」，换个「自带」「预置」就绕过去了。
+const RELATIVE_PHRASES = [
+  '内置', '别的工具', '第二个工具',
+  '自带', '预置', '随运行时', '官方那套',
+];
 const RELATIVE_PHRASE_SCOPE = ['SKILL.md', 'README.md', 'references', 'evals'];
 
 let errors = 0;
@@ -191,12 +195,19 @@ if (refNames.length > 0 && refNames.every((r) => existsSync(join(dir, 'reference
 }
 
 // --- references 目录：孤儿文件与换行符 ---
+// 孤儿文件此前只报 WARN，退出码不受影响——那意味着把 verification.md（证伪闸门）
+// 从 SKILL.md 的引用里摘掉，CI 照样绿，而闸门在运行时已经不可达了。
+// 引用是契约的一部分：文件在仓里却没被任何流程读到，它就是死的。
 const refDir = join(dir, 'references');
 if (existsSync(refDir)) {
   for (const f of readdirSync(refDir)) {
     if (!f.endsWith('.md')) continue;
     if (!refNames.includes(f)) {
-      warn(`references/${f} is not referenced from SKILL.md (orphan?)`);
+      fail(
+        `references/${f} is not referenced from SKILL.md (orphan). ` +
+          '契约文件必须被 SKILL.md 以 `references/<name>.md` 形式引用——' +
+          '没人读到的文件在运行时不可达（比如闸门表被摘掉，证伪环节就静默消失了）。',
+      );
     }
     if (readFileSync(join(refDir, f)).includes(0x0d)) {
       fail(`references/${f} contains CRLF line endings`);
