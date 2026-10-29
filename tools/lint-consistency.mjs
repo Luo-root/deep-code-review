@@ -2231,27 +2231,120 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 33. 「无基线」范围行的字面量必须三处一致 ----------
-// 契约的「可以合」在无基线时读作「本路径没有必须改的问题」，
-// 而这条读法依赖范围行里的「（无基线，全量体检）」——三处字面量漂了没人管。
+// ---------- 33. 范围行按基线类型分形态：表是唯一定义处，别处只许引用 ----------
+// 这一项此前只校验「（无基线，全量体检）」在 SKILL.md / README.md / output-template.md 三处一致——
+// 也就是**强制三个文件各抄一份**。而契约（SKILL.md 那张表自称「这一份是唯一定义处」、
+// output-template.md 写着「本文件不复述」）要求的是**只此一处定义、别处引用**：
+// 守卫站错了边——它强制的是契约明文禁止的行为。
+//
+// 现在这一项拆成四条：
+//   ① 表必须覆盖 5 种基线形态（按**第一列**精确比对，不能子串匹配：
+//      否则「分支 / PR」会被「分支 / PR（基线取不到）」顶包）；
+//   ② 表是唯一定义处——两个字面量在 SKILL.md 里只允许出现在那张表内，表外出现 → 报红；
+//   ③ output-template.md 不许复述，且必须写明「按 `SKILL.md` 输出契约的『范围行按基线类型分形态』那张表」；
+//   ④ README.md 面向读者，允许留示例，但字面量必须与表一致（不得出现「（无基线：」）。
+//
+// 注意：evals/runbook.md 也含「（无基线，全量体检）」——它是**评测流程**文件，不是执行契约，
+// 这一项不扫它，不要误伤。
 {
-  const TOKEN = '（无基线，全量体检）';
-  const files = [
-    ['SKILL.md', read('SKILL.md')],
-    ['README.md', read('README.md')],
-    ['references/output-template.md', read('references/output-template.md')],
-  ];
+  const TOKEN_NOBASE = '（无基线，全量体检）';
+  const TOKEN_NOBASE_REASON = '（无基线：';
+  const REF_SENTENCE = '按 `SKILL.md` 输出契约的「范围行按基线类型分形态」那张表';
+  const EXPECTED_ROWS = ['分支 / PR', 'commit 级', '工作区改动', '无基线', '分支 / PR（基线取不到）'];
   const bad = [];
-  for (const [name, lines] of files) {
-    if (!lines.some((l) => l.includes(TOKEN))) bad.push(`${name}：找不到范围行字面量「${TOKEN}」`);
-  }
-  if (bad.length) {
-    fail(
-      `「无基线」范围行的字面量在三处副本里不一致：\n    ${bad.join('\n    ')}\n` +
-        `三处必须都写着「${TOKEN}」——读者靠这几个字才知道「可以合」不是合并批准。`,
+
+  // ---- 取 SKILL.md 里那张表：表头 + 表体（表头行本身是守门锚点）----
+  const skill = read('SKILL.md');
+  const headerIdx = skill.findIndex((l) => /^\|\s*基线类型\s*\|/.test(l));
+  let table = null;
+  if (headerIdx === -1) {
+    bad.push(
+      'SKILL.md 里找不到「| 基线类型 | 范围行写法 |」那张表——'
+        + '本项的守门位置与契约实际措辞脱钩了，改一处措辞就会静默失效',
     );
   } else {
-    ok(`「无基线」范围行字面量「${TOKEN}」在 SKILL.md / README.md / output-template.md 三处一致`);
+    const lead = skill
+      .slice(Math.max(0, headerIdx - 3), headerIdx)
+      .some((l) => l.includes('**范围行按基线类型分形态**'));
+    if (!lead) {
+      bad.push('那张表的表头前面没有「**范围行按基线类型分形态**」的引入行——表与「唯一定义处」的声明脱钩了');
+    }
+    const rows = [];
+    let end = headerIdx;
+    for (let i = headerIdx + 1; i < skill.length; i += 1) {
+      if (!/^\s*\|/.test(skill[i])) break;
+      end = i;
+      const cells = skill[i].split('|').slice(1, -1).map((c) => c.trim());
+      if (cells.length >= 1 && cells[0] && !/^:?-{2,}$/.test(cells[0])) rows.push(cells[0]);
+    }
+    table = { start: headerIdx, end, rows };
+  }
+
+  // ---- ① 表必须覆盖 5 种基线形态：第一列逐项精确比对 ----
+  if (table) {
+    if (table.rows.length !== EXPECTED_ROWS.length) {
+      bad.push(
+        `「范围行按基线类型分形态」那张表有 ${table.rows.length} 行（${table.rows.join(' / ')}），`
+          + `应 ${EXPECTED_ROWS.length} 行（${EXPECTED_ROWS.join(' / ')}）`,
+      );
+    }
+    EXPECTED_ROWS.forEach((r, i) => {
+      if (table.rows[i] !== r) {
+        bad.push(
+          `那张表第 ${i + 1} 行的基线类型是「${table.rows[i]}」，应为「${r}」`
+            + '（逐项精确比对，不做子串匹配——子串匹配会让「分支 / PR」被「分支 / PR（基线取不到）」顶包）',
+        );
+      }
+    });
+  }
+
+  // ---- ② 表是唯一定义处：两个字面量在 SKILL.md 里只允许出现在表内 ----
+  if (table) {
+    for (const [i, l] of skill.entries()) {
+      if (i >= table.start && i <= table.end) continue;
+      const hit = l.includes(TOKEN_NOBASE) ? TOKEN_NOBASE : l.includes(TOKEN_NOBASE_REASON) ? TOKEN_NOBASE_REASON : null;
+      if (hit) {
+        bad.push(
+          `SKILL.md:${i + 1} 在表外复述了范围行字面量「${hit}」——`
+            + '那张表是唯一定义处，别处只许引用，不许复述',
+        );
+      }
+    }
+  }
+
+  // ---- ③ output-template.md 不许复述，且必须引用表 ----
+  const tpl = read('references/output-template.md').join('\n');
+  for (const t of [TOKEN_NOBASE, TOKEN_NOBASE_REASON]) {
+    if (tpl.includes(t)) {
+      bad.push(`references/output-template.md 复述了范围行字面量「${t}」——该文件自己写着「本文件不复述」`);
+    }
+  }
+  if (!tpl.includes(REF_SENTENCE)) {
+    bad.push(`references/output-template.md 没有引用「${REF_SENTENCE}」——不许复述，那就必须指向定义处`);
+  }
+
+  // ---- ④ README.md 面向读者：示例的字面量必须与表一致 ----
+  const readme = read('README.md').join('\n');
+  if (!readme.includes(TOKEN_NOBASE)) {
+    bad.push(
+      `README.md 里没有范围行字面量「${TOKEN_NOBASE}」——`
+        + '读者靠这几个字才知道「可以合」不是合并批准',
+    );
+  }
+  if (readme.includes(TOKEN_NOBASE_REASON)) {
+    bad.push(
+      `README.md 里出现了「${TOKEN_NOBASE_REASON}」——`
+        + 'README 没有「基线取不到」这个场景，出现它说明有人把执行契约的形态抄进了面向人的文档',
+    );
+  }
+
+  if (bad.length) {
+    fail(`范围行按基线类型分形态：定义处与引用处对不上：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok(
+      `范围行那张表是唯一定义处（${EXPECTED_ROWS.length} 种基线形态逐项对上），`
+        + 'output-template.md 只引用不复述，README.md 的示例字面量与表一致',
+    );
   }
 }
 
@@ -3801,6 +3894,191 @@ function parsePlaybookSections(pb) {
   }
 }
 
+
+// ---------- 60. 「常见误判」节必须声明处置以闸门表为准，且不额外产出第二条 ----------
+// 这一节只提示误判与识别信号，但它原来没有任何定位声明——读者会把它当成与闸门表平级的
+// 处置依据：闸门表说「差不出具体结果差异 → 删」，这一节说「把设计后果当缺陷 → 放拍板」，
+// 两条摆在同一页，模型按哪条走，结论就不同。
+//
+// 另有一处：「把结构性限制吞掉」原来写「也要作为待拍板项写明差距」——
+// 字面上会被读成「在闸门表的结论之外另外再报一条拍板项」，与「同一根因只报一次」冲突。
+//
+// 守门位置：references/verification.md 的「## 常见误判」节。
+{
+  const verif = read('references/verification.md');
+  const sec = section(verif, /^##\s*常见误判/);
+  const bad = [];
+  if (!sec.length) {
+    fail(
+      'references/verification.md 找不到「## 常见误判」节——'
+        + '本项的守门位置与契约实际措辞脱钩了，改一处措辞就会静默失效',
+    );
+  } else {
+    // ① 定位声明必须在**这一节**里，并写明「处置以闸门表为准」
+    const decl = sec.find((l) => /^\s*>/.test(l) && l.includes('处置') && l.includes('闸门表'));
+    if (!decl) {
+      bad.push(
+        '「常见误判」节里没有定位声明——'
+          + '要有一句说明本节只提示误判与识别信号、处置一律以闸门表为准的话',
+      );
+    } else {
+      if (!decl.includes('不改处置')) {
+        bad.push('「常见误判」节的定位声明没写明「不改处置」——本节与闸门表的关系仍然没写清');
+      }
+      if (!decl.includes('一律以闸门表为准')) {
+        bad.push('「常见误判」节的定位声明没写明「一律以闸门表为准」——本节与闸门表的关系仍然没写清');
+      }
+    }
+    // ② 「把结构性限制吞掉」不得再额外产出一条待拍板项
+    const item = sec.find((l) => l.includes('把结构性限制吞掉'));
+    if (!item) {
+      bad.push('「常见误判」节里找不到「把结构性限制吞掉」那条');
+    } else {
+      if (item.includes('也要作为待拍板项')) {
+        bad.push(
+          '「把结构性限制吞掉」那条仍写着「也要作为待拍板项」——'
+            + '那会被读成在闸门表的结论之外再报一条，同一个根因被报两次',
+        );
+      }
+      if (!item.includes('处置按闸门表「宣称与实现不符」行走')) {
+        bad.push('「把结构性限制吞掉」那条没有写明「处置按闸门表「宣称与实现不符」行走」');
+      }
+      if (!item.includes('不额外产生第二条')) {
+        bad.push('「把结构性限制吞掉」那条没有写明「不额外产生第二条」');
+      }
+    }
+  }
+  if (bad.length) {
+    fail(`「常见误判」节与闸门表的关系没写清：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok('「常见误判」节有定位声明（处置以闸门表为准），且没有额外产出第二条待拍板项');
+  }
+}
+
+// ---------- 61. 兼容性维度的比对面判据必须是「快照同一性」，并给未提交改动留豁免 ----------
+// 原来的条件写的是**提交身份**（「比对面必须严格早于被审的那份代码」），理由说的却是
+// **快照是否相同**（「拿 HEAD 跟自己比，差异恒为空」）。条件与理由错位：
+// 在工作区有未提交改动时 HEAD 就是这份代码的上一版，按原条件会把合法的比对面排除掉，
+// 模型于是写「未扫（无可比历史）」——把「没比」写成「没得比」。
+//
+// 守门位置：SKILL.md 的「「兼容性」这一维在无基线体检里不是空转」那条。
+{
+  const skill = read('SKILL.md');
+  const bad = [];
+  const item = skill.find((l) => l.includes('「兼容性」这一维在无基线体检里不是空转'));
+  if (!item) {
+    fail(
+      'SKILL.md 找不到「「兼容性」这一维在无基线体检里不是空转」那条——'
+        + '本项的守门位置与契约实际措辞脱钩了，改一处措辞就会静默失效',
+    );
+  } else {
+    if (!item.includes('比对面不得是被审代码的同一份快照')) {
+      bad.push('兼容性那条没把比对面的判据写成「比对面不得是被审代码的同一份快照」（快照同一性）');
+    }
+    if (item.includes('比对面必须严格早于被审的那份代码')) {
+      bad.push(
+        '兼容性那条仍以「比对面必须严格早于被审的那份代码」为条件——'
+          + '那是提交身份，与「快照是否相同」不是一回事，工作区有未提交改动时会把 HEAD 排除掉',
+      );
+    }
+    if (!item.includes('若被审内容含未提交改动，HEAD 本身即可作为比对面')) {
+      bad.push('兼容性那条没有写明「若被审内容含未提交改动，HEAD 本身即可作为比对面」');
+    }
+    if (!item.includes('比对面与被审内容是同一份快照时差异恒为空')) {
+      bad.push('兼容性那条的理由句没跟着条件走（应写「比对面与被审内容是同一份快照时差异恒为空」）');
+    }
+    if (item.includes('拿 HEAD 跟自己比')) {
+      bad.push('兼容性那条的理由句还写着「拿 HEAD 跟自己比」——那是提交身份的说法，与现在的判据不是一回事');
+    }
+  }
+  if (bad.length) {
+    fail(`兼容性维度的比对面判据与理由对不上：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok('兼容性维度的比对面判据是快照同一性，并写明了未提交改动时 HEAD 可作为比对面');
+  }
+}
+
+// ---------- 62. 快模式的「方向性取舍」必须带「已被承认」这个前置条件 ----------
+// 快模式原来写「撞见方向性取舍时（两条路径行为不一致、职责边界说不清这类）」——
+// 把「没被承认的分裂」也算成了方向性取舍。而闸门表、dimensions.md 第 6 维、SKILL.md 的分级规则
+// 都要求**先判是不是已被承认的取舍**：没被承认 → 是缺陷 → P1 → 必须修 → 改完再合；
+// 被承认 → 拍板 → 方向先定。同一候选在两档下因此产出相反的合并结论。
+//
+// 守门位置：references/regression-review.md 的「撞见方向性取舍时」那条。
+{
+  const rr = read('references/regression-review.md');
+  const bad = [];
+  const item = rr.find((l) => l.includes('撞见方向性取舍时'));
+  if (!item) {
+    fail(
+      'references/regression-review.md 找不到「撞见方向性取舍时」那条——'
+        + '本项的守门位置与契约实际措辞脱钩了，改一处措辞就会静默失效',
+    );
+  } else {
+    if (!item.includes('上层注释或设计文档已经承认的')) {
+      bad.push('快模式那条没写明前置条件「上层注释或设计文档已经承认的」——没被承认的分裂是缺陷，不是取舍');
+    }
+    if (item.includes('（两条路径行为不一致、职责边界说不清这类）')) {
+      bad.push('快模式那条的括注仍是旧写法「（两条路径行为不一致、职责边界说不清这类）」——前置条件被漏掉了');
+    }
+    if (!item.includes('没被承认的分裂不是取舍、是缺陷')) {
+      bad.push('快模式那条没写明「没被承认的分裂不是取舍、是缺陷」');
+    }
+    if (!item.includes('闸门表「语义分裂 / 职责重叠」行')) {
+      bad.push('快模式那条没有指向闸门表的「语义分裂 / 职责重叠」行——同一候选在两档下会得出相反结论');
+    }
+  }
+  if (bad.length) {
+    fail(`快模式的方向性取舍缺「已被承认」这个前置条件：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok('快模式的方向性取舍带了「已被承认」的前置条件，并指向闸门表');
+  }
+}
+
+// ---------- 63. 「关键分支」「高风险」必须有口径，且只此一处定义 ----------
+// 「测试盲区」这一维唯一的报/不报入口就是「关键分支完全没有覆盖且该分支高风险」，
+// 而这两个词此前没有任何口径——边界上的候选，一个执行者报 P2、另一个不报。
+//
+// 口径写在 references/dimensions.md 的「### 测试盲区」节（唯一定义处），
+// SKILL.md 只许引用，不许复述。
+{
+  const bad = [];
+  const dim = read('references/dimensions.md');
+  const sec = section(dim, /^###\s*测试盲区/);
+  if (!sec.length) {
+    fail(
+      'references/dimensions.md 找不到「### 测试盲区」节——'
+        + '本项的守门位置与契约实际措辞脱钩了，改一处措辞就会静默失效',
+    );
+  } else {
+    const text = sec.join('\n');
+    if (!/「关键分支」\s*[=＝]/.test(text)) {
+      bad.push('「测试盲区」节没有给「关键分支」下定义（应写「「关键分支」= …」）');
+    }
+    if (!/「高风险」\s*[=＝]/.test(text)) {
+      bad.push('「测试盲区」节没有给「高风险」下定义（应写「「高风险」= …」）');
+    }
+    if (!text.includes('行为与其它分支不同')) {
+      bad.push('「关键分支」的定义里没有「行为与其它分支不同」这一条判据');
+    }
+    if (!text.includes('直接产出错的结果或错的状态')) {
+      bad.push('「高风险」的定义里没有「直接产出错的结果或错的状态」这一条判据');
+    }
+  }
+  // SKILL.md 只许引用，不许复述
+  const skill = read('SKILL.md').join('\n');
+  if (!skill.includes('口径见 `references/dimensions.md` 的测试盲区节')) {
+    bad.push('SKILL.md 没有引用「口径见 `references/dimensions.md` 的测试盲区节」——口径在别处，SKILL.md 要指过去');
+  }
+  if (/「关键分支」\s*[=＝]/.test(skill) || /「高风险」\s*[=＝]/.test(skill)) {
+    bad.push('SKILL.md 复述了「关键分支」/「高风险」的定义——口径只在 references/dimensions.md 的测试盲区节定一次');
+  }
+  if (bad.length) {
+    fail(`「关键分支」「高风险」的口径缺失或被复述：\n    ${bad.join('\n    ')}`);
+  } else {
+    ok('「关键分支」「高风险」的口径在 dimensions.md 的测试盲区节里唯一定义，SKILL.md 只引用');
+  }
+}
 // ---------- 58. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
