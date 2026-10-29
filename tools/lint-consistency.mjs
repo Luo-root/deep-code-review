@@ -102,6 +102,34 @@ const BLOCK_KINDS = {
   fastish: (b) => !b.includes(COVERAGE_HEAD) && !/##\s*必须修/.test(b),
 };
 
+/**
+ * 契约里的示例块清单：**每个 (文件, 形态) 应当恰好命中一块**。
+ * 示例是模型模仿的对象——少一块，模型就少一种形态可照抄，CI 却全绿。
+ * kind 见 BLOCK_KINDS；fastishZero = 快模式但没有五项计数（零发现那一句）。
+ * needClaim 标这一形态是否必须写「宣称：… ／ 实际：…」。
+ * **这里是唯一真相源**：第 36 项（宣称行）与第 45 项（块存在性）都从这张表派生。
+ * 抄两份就会漂——加一种形态只改一处，检查就漏了一半。
+ */
+const EXAMPLE_BLOCKS = [
+  { rel: 'references/output-template.md', kind: 'skeleton', want: 1, needClaim: false },
+  { rel: 'references/output-template.md', kind: 'zero', want: 1, needClaim: true },
+  { rel: 'references/output-template.md', kind: 'fast', want: 1, needClaim: true },
+  { rel: 'references/output-template.md', kind: 'full', want: 1, needClaim: true },
+  { rel: 'README.md', kind: 'full', want: 1, needClaim: true },
+  { rel: 'references/regression-review.md', kind: 'fast', want: 1, needClaim: true },
+  { rel: 'references/regression-review.md', kind: 'fastishZero', want: 1, needClaim: false },
+];
+
+/** 按 EXAMPLE_BLOCKS 的形态取示例块；命中数不等于 1 时返回 null（调用方必须报红） */
+function exampleBlock(rel, kind) {
+  const blocks = fencedBlocks(read(rel));
+  const hits =
+    kind === 'fastishZero'
+      ? blocks.filter((b) => BLOCK_KINDS.fastish(b) && !BLOCK_KINDS.fast(b))
+      : blocks.filter(BLOCK_KINDS[kind]);
+  return hits.length === 1 ? hits[0] : null;
+}
+
 /** 按特征取块；命中数不等于 1 时返回 null（调用方必须报红，不能默认取第一个） */
 function pickBlock(lines, kind) {
   const hits = fencedBlocks(lines).filter(BLOCK_KINDS[kind]);
@@ -160,19 +188,56 @@ const CANONICAL_DIMENSIONS = [
 // 结果格的合法取值集合：**唯一真相源**。正则、数量声明、错误消息都从这里派生——
 // 手工维护三份副本时，加一种取值漏改一处，lint 就对不上它自己声称守住的东西。
 // kind 用于语义分类：exact = 固定词；count = 条数（可带级别）；pointer = 指向别的维度。
+// re 是该取值的正则源，同样只有这一份——「n 条」的 n 必须 ≥1（契约写死「n=0 写『无发现』」），
+// 这个约束写进正则是唯一守得住它的地方：另写一份正则就等于多一个真相源，
+// 于是「0 条（P1）」这种非法值能从两条真相源之间钻过去。
 const RESULT_VALUES = [
-  { kind: 'exact', text: '无发现', desc: '无发现' },
-  { kind: 'pointer', text: '已查（见 X）', desc: '已查（见 X）' },
-  { kind: 'exact', text: '未扫（理由）', desc: '未扫（理由）' },
-  { kind: 'count', text: 'n 条（级别）', desc: 'n 条（级别）' },
-  { kind: 'count+pointer', text: 'n 条（级别），另见 X', desc: 'n 条（级别），另见 X' },
+  { kind: 'exact', text: '无发现', desc: '无发现', re: '无发现' },
+  { kind: 'pointer', text: '已查（见 X）', desc: '已查（见 X）', re: '已查（见 .+）' },
+  { kind: 'exact', text: '未扫（理由）', desc: '未扫（理由）', re: '未扫（.+）' },
+  { kind: 'count', text: 'n 条（级别）', desc: 'n 条（级别）', re: '[1-9]\\d* 条（.+）' },
+  { kind: 'count+pointer', text: 'n 条（级别），另见 X', desc: 'n 条（级别），另见 X', re: '[1-9]\\d* 条（.+），另见 .+' },
 ];
+// 结果格的合法形态：从 RESULT_VALUES 派生，不另写一份
+const resultRe = new RegExp(`^(?:${RESULT_VALUES.map((v) => v.re).join('|')})$`);
 // 结果格数量 = RESULT_VALUES.length。第 22 项用它与各处「N 种取值」的声明比对。
 const ACTUAL_RESULT_COUNT = RESULT_VALUES.length;
 // 允许出现在结果格里的取值描述（供错误消息与文档使用）
 const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
 // 标签的第三段合法取值（引入方式）
 const CANONICAL_ORIGINS = ['本次引入', '既有', '现状'];
+// 「查了什么」列禁止的模板句——契约点名禁止「只写维度名」「已全面检查」「模板句」。
+// 只写维度名由下面那条单独判（what === dim）。
+const FORBIDDEN_WHAT = ['已全面检查', '已全部检查', '全面检查', '已检查', '已看', '已读'];
+
+/** 从一组行里取出所有维度覆盖表（每张表 = 行数组）；表头之后、表格结束之前算表内 */
+function coverageTables(lines) {
+  const tables = [];
+  let current = null;
+  for (const l of lines) {
+    if (/^\|\s*维度\s*\|\s*结果\s*\|\s*查了什么\s*\|/.test(l)) {
+      current = [];
+      tables.push(current);
+      continue;
+    }
+    if (current) {
+      if (/^\|\s*-{2,}/.test(l)) continue;
+      if (!/^\|\s/.test(l)) { current = null; continue; }
+      current.push(l);
+    }
+  }
+  return tables;
+}
+
+/**
+ * 省略标记行：行名格是「…」或「...」。
+ * 两种写法都认——零发现示例用「…」，README 的示例用「...」，
+ * 只认一种，另一处就会被当成真行名报红（而报错的人改不掉，因为契约就是这么写的）。
+ */
+function isOmissionRow(line) {
+  const name = (line.split('|')[1] ?? '').trim();
+  return name.includes('…') || name.includes('...');
+}
 /**
  * 像不像 finding 标签：级别开头，或维度段是规范维度名，或第三段是引入方式。
  * 否则就是 markdown 的引用式链接（[文字][fast-mode]）——那种不是标签，
@@ -188,28 +253,15 @@ function looksLikeTag(level, dim, origin) {
 }
 {
   const tpl = read('references/output-template.md');
-  const tables = [];
-  let current = null;
-  for (const l of tpl) {
-    if (/^\|\s*维度\s*\|\s*结果\s*\|\s*查了什么\s*\|/.test(l)) {
-      current = [];
-      tables.push(current);
-      continue;
-    }
-    if (current) {
-      if (/^\|\s*-{2,}/.test(l)) continue;
-      if (!/^\|\s/.test(l)) { current = null; continue; }
-      current.push(l);
-    }
-  }
+  const tables = coverageTables(tpl);
   if (!tables.length) {
     fail('output-template.md 里找不到维度覆盖表');
   } else {
     let bad = 0;
     for (const [i, t] of tables.entries()) {
       const names = t.map((l) => l.split('|')[1].trim());
-      // 标了「…」的是省略版（例如零发现示例里的那张），不要求 15 行齐全
-      if (names.some((n) => n.includes('…'))) {
+      // 标了「…」/「...」的是省略版（例如零发现示例里的那张），不要求 15 行齐全
+      if (names.some((n) => n.includes('…') || n.includes('...'))) {
         ok(`第 ${i + 1} 张覆盖表是显式省略版（标了「…」），跳过 15 行完整性检查`);
         continue;
       }
@@ -234,12 +286,10 @@ function looksLikeTag(level, dim, origin) {
     }
     if (!bad) ok(`${tables.length} 张覆盖表的行名、顺序与行数都符合规范（${CANONICAL_DIMENSIONS.length} 行）`);
 
-    // 结果格取值：逐条匹配 RESULT_VALUES 派生的正则。
+    // 结果格取值：逐条匹配 RESULT_VALUES 派生的正则（resultRe 由唯一真相源生成）。
     // 「n 条（级别），另见 X」是第 5 种取值：本维既有自己的条目、又有结论归到别的维度时用。
     // 裸「n 条」（不带级别）不是合法取值——级别是与结论行对账的唯一钥匙。
-    const resultRe = new RegExp(
-      `^(?:无发现|已查（见 .+）|未扫（.+）|\\d+ 条（.+）(，另见 .+)?)$`,
-    );
+    // n 必须是正整数：契约写死「n=0 写『无发现』」，「0 条（P1）」不在取值集合内。
     const offenders = [];
     for (const t of tables) {
       for (const l of t) {
@@ -278,7 +328,6 @@ function looksLikeTag(level, dim, origin) {
 
     // 「查了什么」列不能是模板句——契约点名禁止「只写维度名」「已全面检查」「模板句」，
     // 此前只查非空，模板句照样过。模型照抄模板句，覆盖表看着齐全，读者无法复核。
-    const FORBIDDEN_WHAT = ['已全面检查', '已全部检查', '全面检查', '已检查', '已看', '已读'];
     const whatBad = [];
     for (const [ti, t] of tables.entries()) {
       for (const l of t) {
@@ -1856,28 +1905,22 @@ function parsePlaybookSections(pb) {
   // 全量模式与零发现的示例里也必须有「宣称：… ／ 实际：…」这一行——
   // 契约要求两档都写，而模型模仿的是示例：示例里没有，模型就不会写，
   // 第 1 步的落差对照直接消失（补进去之后没人守，照样会漂回去）。
-  for (const [rel, kinds] of [
-    ['references/output-template.md', ['full', 'zero']],
-    ['README.md', ['full']],
-  ]) {
-    const blocks = fencedBlocks(read(rel));
-    for (const kind of kinds) {
-      const hits = blocks.filter(BLOCK_KINDS[kind]);
-      if (hits.length !== 1) {
-        bad.push(`${rel}：${kind} 示例块定位失败（应恰好 1 块，实际 ${hits.length} 块）——「宣称／实际」行无从校验`);
-        continue;
-      }
-      // 两种合法写法：有落差写「宣称：… ／ 实际：…」，没有落差写「宣称与实际一致」。
-      // 只认前一种会把零发现示例（按契约写的是后者）误判成违规。
-      const claimLine = hits[0]
-        .split('\n')
-        .find((l) => /^宣称[：与]/.test(l.trim()) && l.includes('实际'));
-      if (!claimLine) {
-        bad.push(
-          `${rel}：${kind} 示例里没有「宣称：… ／ 实际：…」这一行` +
-            '（没有落差时写「宣称与实际一致」也算）——两档都要写这一行',
-        );
-      }
+  // 要写「宣称／实际」这一行的形态清单来自 EXAMPLE_BLOCKS（唯一真相源）。
+  // 块「在不在」交第 44 项管——这里只管块在时内容对不对，不重复报「缺一块」。
+  for (const entry of EXAMPLE_BLOCKS.filter((e) => e.needClaim)) {
+    const { rel, kind } = entry;
+    const block = exampleBlock(rel, kind);
+    if (!block) continue; // 块不在 → 第 44 项报红
+    // 两种合法写法：有落差写「宣称：… ／ 实际：…」，没有落差写「宣称与实际一致」。
+    // 只认前一种会把零发现示例（按契约写的是后者）误判成违规。
+    const claimLine = block
+      .split('\n')
+      .find((l) => /^宣称[：与]/.test(l.trim()) && l.includes('实际'));
+    if (!claimLine) {
+      bad.push(
+        `${rel}：${kind} 示例里没有「宣称：… ／ 实际：…」这一行` +
+          '（没有落差时写「宣称与实际一致」也算）——两档都要写这一行',
+      );
     }
   }
   if (bad.length) {
@@ -2171,10 +2214,18 @@ function parsePlaybookSections(pb) {
     const m = r.match(/^\|\s*`([^`]+)`/);
     if (m) listed.add(m[1]);
   }
-  const onDisk = readdirSync(join(dir, 'references')).filter((f) => f.endsWith('.md')).sort();
+  // references 目录可能整个不存在——此前 readdirSync 直接抛 ENOENT，
+  // 进程在栈里中断：退出码仍是 1（CI 不会误绿），但前面积累的几十条契约缺失一条都没汇总，
+  // 读者只看到一坨 Node 栈。缺目录要说成「缺目录」，不是让调用方读栈。
+  const refDir = join(dir, 'references');
+  const refDirMissing = !existsSync(refDir);
+  const onDisk = refDirMissing
+    ? []
+    : readdirSync(refDir).filter((f) => f.endsWith('.md')).sort();
   const expected = ['SKILL.md', ...onDisk.map((f) => `references/${f}`)];
   const missing = expected.filter((f) => !listed.has(f));
   const bad = [];
+  if (refDirMissing) bad.push('仓库里没有 references 目录');
   if (!rows.length) {
     bad.push('SKILL.md 里找不到「本次审查要读哪些文件」这张表');
   } else if (missing.length) {
@@ -2190,7 +2241,120 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 44. 本文件末尾才判定退出码 ----------
+// ---------- 44. 契约里的示例块必须齐全：少一块，模型就少一种形态可照抄 ----------
+// 此前只有 full / zero 两类被要求「恰好 1 块」，**快模式示例整块删掉，CI 照样全绿**——
+// 而快模式正是模型最常照抄的那份。示例没了，模型就退回自己编的形态。
+// 清单来自 EXAMPLE_BLOCKS（唯一真相源），第 36 项的「宣称行」也从同一张表派生。
+{
+  const bad = [];
+  for (const entry of EXAMPLE_BLOCKS) {
+    const blocks = fencedBlocks(read(entry.rel));
+    const got =
+      entry.kind === 'fastishZero'
+        ? blocks.filter((b) => BLOCK_KINDS.fastish(b) && !BLOCK_KINDS.fast(b)).length
+        : blocks.filter(BLOCK_KINDS[entry.kind]).length;
+    if (got !== entry.want) {
+      bad.push(`${entry.rel}：${entry.kind} 示例块应有 ${entry.want} 个，实际 ${got} 个`);
+    }
+  }
+  if (bad.length) {
+    fail(
+      `契约里的示例块不齐全：\n    ${bad.join('\n    ')}\n` +
+        '示例是模型模仿的对象——少一块，模型就少一种形态可照抄，而 CI 照样全绿。',
+    );
+  } else {
+    ok(
+      `契约里的示例块齐全（${EXAMPLE_BLOCKS.length} 个 (文件, 形态) 组合，各恰好 1 块：` +
+        '骨架 / 零发现 / 全量 / 快模式 / 快模式零发现）',
+    );
+  }
+}
+
+// ---------- 45. README 里的示例覆盖表也要进校验 ----------
+// SKILL.md 明说「这张速查表在 README.md 里也有一份」，而 README 是读者的第一入口。
+// 此前覆盖表只从 references/output-template.md 收集：README 那张表的行名、结果格、
+// 「查了什么」列一个都不查——把「错误路径与部分失败」改成「错误路径」，CI 全绿。
+//
+// 这一项**不并进第 2/3 项的表集合**：并进去会改变「第 N 张覆盖表」的编号，
+// 反向验证脚本按编号与文案定位，会跟着一起漂。两项分开查，各自独立可测。
+{
+  const bad = [];
+  const blocks = fencedBlocks(read('README.md')).filter(BLOCK_KINDS.full);
+  if (blocks.length !== 1) {
+    bad.push(`README.md 的全量示例块应恰好 1 个，实际 ${blocks.length} 个`);
+  } else {
+    const tables = coverageTables(blocks[0].split('\n'));
+    if (!tables.length) {
+      bad.push('README.md 的示例里找不到维度覆盖表');
+    } else {
+      const rows = tables[0];
+      const real = rows.filter((l) => !isOmissionRow(l));
+      const omitted = rows.filter((l) => isOmissionRow(l));
+      const names = real.map((l) => l.split('|')[1].trim());
+      for (const n of names) {
+        if (!CANONICAL_DIMENSIONS.includes(n)) {
+          bad.push(`README 示例覆盖表的行名「${n}」不是规范维度名`);
+        }
+      }
+      if (names.length === CANONICAL_DIMENSIONS.length) {
+        if (names.join('|') !== CANONICAL_DIMENSIONS.join('|')) {
+          bad.push(
+            `README 示例覆盖表的行序与规范顺序不一致：\n    实际：${names.join(' | ')}\n` +
+              `    规范：${CANONICAL_DIMENSIONS.join(' | ')}`,
+          );
+        }
+      } else if (!omitted.length) {
+        bad.push(
+          `README 示例覆盖表只有 ${names.length} 行且没有省略标记——` +
+            '它要么 15 行齐全，要么用「...」标出省略的行；半张表没有标记，模型会照抄成半张',
+        );
+      }
+      // README 的示例覆盖表是 output-template 那张表的**逐行子集**——
+      // 两边是「同一个场景」的两份副本（示例计数与 finding 落点早已两边对过账），
+      // 所以同一行的结果格与「查了什么」必须逐字相同：只改一边，两个副本就对不上了，
+      // 而读者看到的是哪一份，取决于他从哪个入口进来。
+      const tplFull = fencedBlocks(read('references/output-template.md')).filter(BLOCK_KINDS.full);
+      if (tplFull.length === 1) {
+        const tplTables = coverageTables(tplFull[0].split('\n'));
+        const tplRows = new Set((tplTables[0] ?? []).map((l) => l.replace(/\s+/g, ' ').trim()));
+        for (const l of real) {
+          const key = l.replace(/\s+/g, ' ').trim();
+          if (!tplRows.has(key)) {
+            bad.push(`README 示例覆盖表的这一行在 output-template 的示例表里没有逐字对应：${key}`);
+          }
+        }
+      }
+      for (const l of real) {
+        const cells = l.split('|').map((c) => c.trim());
+        const dim = cells[1];
+        const result = cells[2] ?? '';
+        const what = cells[3] ?? '';
+        if (result && !resultRe.test(result)) {
+          bad.push(
+            `README 示例覆盖表「${dim}」行的结果格取值「${result}」不在允许集合内` +
+              `（允许：${CANONICAL_RESULTS.join(' / ')}）`,
+          );
+        }
+        if (!what) {
+          bad.push(`README 示例覆盖表「${dim}」行的「查了什么」列是空的`);
+        } else if (FORBIDDEN_WHAT.includes(what) || what === dim) {
+          bad.push(`README 示例覆盖表「${dim}」行的「查了什么」写的是模板句「${what}」`);
+        }
+      }
+    }
+  }
+  if (bad.length) {
+    fail(
+      `README 的示例覆盖表没进校验：\n    ${bad.join('\n    ')}\n` +
+        'README 是读者的第一入口，SKILL.md 明说这张速查表在 README 里也有一份——' +
+        '它写错行名、结果格取值不合法、「查了什么」列空着或写模板句，读者与模型都会被带偏。',
+    );
+  } else {
+    ok('README 的示例覆盖表行名、结果格与「查了什么」列都合规');
+  }
+}
+
+// ---------- 46. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
 console.log('');

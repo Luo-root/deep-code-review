@@ -235,6 +235,51 @@ if (existsSync(refDir)) {
   }
 }
 
+// --- 契约文件的 BOM ---
+// 此前两个 lint 的读函数都主动剥掉 BOM（`readText` / `read`），于是**没有任何检查会报它**。
+// 带 BOM 入库的 SKILL.md 会让以正则解析 frontmatter 的工具把 name/description 读成空——
+// 与 CRLF 同一类故障，只是更隐蔽：文件看着正常，内容读不出来。
+// .gitattributes 的 `* text=auto eol=lf` 不处理 BOM，所以它会原样入库。
+{
+  const files = [
+    join(dir, 'SKILL.md'),
+    join(dir, 'README.md'),
+    ...(existsSync(refDir)
+      ? readdirSync(refDir)
+          .filter((f) => f.endsWith('.md'))
+          .map((f) => join(refDir, f))
+      : []),
+  ];
+  const bomBad = [];
+  for (const p of files) {
+    if (!existsSync(p)) continue;
+    const buf = readFileSync(p);
+    if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+      bomBad.push(p.slice(dir.length + 1).replace(/\\/g, '/'));
+    }
+  }
+  if (bomBad.length) {
+    fail(
+      `契约文件带 UTF-8 BOM：${bomBad.join('、')}\n` +
+        'BOM 会让以正则解析 frontmatter 的工具把 name/description 读成空——文件看着正常，内容读不出来。' +
+        '请以无 BOM 的 UTF-8 重新提交。',
+    );
+  } else {
+    ok('contract files have no UTF-8 BOM');
+  }
+}
+
+// --- README.md 的换行符 ---
+// SKILL.md 上面查了 CRLF，references/*.md 在 references 循环里查了，README.md 此前没人管。
+{
+  const readmePath = join(dir, 'README.md');
+  if (existsSync(readmePath) && readFileSync(readmePath).includes(0x0d)) {
+    fail('README.md contains CRLF line endings');
+  } else {
+    ok('README.md uses LF line endings');
+  }
+}
+
 // --- 相对表述 ---
 // skill 必须自述能力，不靠对比定义。跨工具的选型说明属于「给人看的」，但也不该用
 // 「内置 X」这种措辞——正确做法是让本 skill 覆盖那件事，而不是比较谁更强。
