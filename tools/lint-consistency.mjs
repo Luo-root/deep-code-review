@@ -2354,7 +2354,282 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 46. 本文件末尾才判定退出码 ----------
+// ---------- 46–54. evals/ 护栏自身的自洽 ----------
+// 为什么单独加这一段：第 22 轮 22C 自审在 evals/ 里挖出 14 条内部矛盾——
+// 「满分 25」与「有效分母是 23」并存、证据级别标题写 1–5 而表里有第 6 级、
+// 归类的分母在 rubric 与 baseline 里是两套、GT 引用的 baseline 节名根本不存在、
+// 样本规模在三处写成 150 / 约 200 / 约 370。
+// 前面 45 项检查**一行都不读 evals/**，这类矛盾在 lint 全绿时照样存在。
+// 人记不住，所以在这里机器化。
+{
+  const rubricLines = read('evals/rubric.md');
+  const rubric = rubricLines.join('\n');
+  const gtTiny = read('evals/ground-truth.md').join('\n');
+  const gtRule = read('evals/ground-truth-rule-engine.md').join('\n');
+  const base = read('evals/baseline.md').join('\n');
+  const runbook = read('evals/runbook.md').join('\n');
+  const evalsReadme = read('evals/README.md').join('\n');
+
+  // ---------- 46. 命中/归类的分母表述不得互斥 ----------
+  {
+    let bad = 0;
+    for (const [name, text] of [
+      ['evals/rubric.md', rubric],
+      ['evals/ground-truth.md', gtTiny],
+      ['evals/baseline.md', base],
+    ]) {
+      if (text.includes('满分 25')) {
+        fail(`${name} 出现「满分 25」——命中/归类的有效满分是 23（G9 / G25 与 G3 同根因），名义 25 只是条目数`);
+        bad += 1;
+      }
+    }
+    if (!rubric.includes('有效满分 23')) {
+      fail('evals/rubric.md 没有写明「有效满分 23」');
+      bad += 1;
+    }
+    if (bad === 0) ok('命中/归类的分母表述一致（无「满分 25」，rubric 写明有效满分 23）');
+  }
+
+  // ---------- 47. 证据级别区间在 rubric 各处必须一致 ----------
+  {
+    const five = (rubric.match(/1[–-]5/g) ?? []).length;
+    const six = (rubric.match(/1[–-]6/g) ?? []).length;
+    let bad = 0;
+    if (five > 0) {
+      fail(`evals/rubric.md 仍有 ${five} 处「1–5」——证据强度有 6 级（只有 D 轮可达），区间写法必须统一成 1–6`);
+      bad += 1;
+    }
+    if (six < 3) {
+      fail(`evals/rubric.md 只有 ${six} 处「1–6」——证据级别区间在标题、正文、读分提醒三处都要写`);
+      bad += 1;
+    }
+    if (bad === 0) ok(`证据强度级别区间在 rubric 各处一致（1–6，${six} 处）`);
+  }
+
+  // ---------- 48. 误报口径：正文与细则三必须一致，且写明不叠加 ----------
+  {
+    let bad = 0;
+    // 只看正文的误报表（### 2. 误报 那一节），不扫全文——判定表里也会提到「不该报」
+    const body = section(rubricLines, /^### 2\. 误报/);
+    if (body.length === 0) {
+      fail('evals/rubric.md 找不到「### 2. 误报（precision）」正文节');
+      bad += 1;
+    }
+    for (const l of body) {
+      if (/^\|/.test(l) && l.includes('不该报') && !l.includes('修复项')) {
+        fail(`evals/rubric.md 正文误报表里提到「不该报」的那行没写「修复项」：${l.trim()}`);
+        bad += 1;
+      }
+    }
+    const detail = section(rubricLines, /^## 三、误报/);
+    if (detail.length === 0) {
+      fail('evals/rubric.md 找不到「## 三、误报」细则节');
+      bad += 1;
+    } else {
+      const d = detail.join('\n');
+      if (!d.includes('口味问题')) {
+        fail('evals/rubric.md 细则三没有「口味问题」这一行——正文有、细则没有，同一条候选的扣分会分叉');
+        bad += 1;
+      }
+      if (!d.includes('不叠加')) {
+        fail('evals/rubric.md 细则三没写「不叠加」——同一条候选可能被重复扣分');
+        bad += 1;
+      }
+    }
+    if (bad === 0) ok('误报口径：正文与细则三一致，且写明同一条候选不叠加扣分');
+  }
+
+  // ---------- 49. 归类分母的主口径在 rubric 与 baseline 一致 ----------
+  {
+    let bad = 0;
+    if (base.includes('归类的分母是**报告实际交付')) {
+      fail('evals/baseline.md 把「已报条目数」当成了归类的主分母——rubric 的主分母是 N 条 GT，已报条目只是辅助值');
+      bad += 1;
+    }
+    if (!base.includes('有效分母 23')) {
+      fail('evals/baseline.md 没有写「有效分母 23」');
+      bad += 1;
+    }
+    if (!base.includes('辅助值')) {
+      fail('evals/baseline.md 没有标明哪个数字是辅助值');
+      bad += 1;
+    }
+    if (!rubric.includes('分母：N 条 GT')) {
+      fail('evals/rubric.md 的记录格式里没有「分母：N 条 GT」');
+      bad += 1;
+    }
+    if (bad === 0) ok('归类分母：rubric 与 baseline 都以 N 条 GT 为主分母，已报条目标为辅助值');
+  }
+
+  // ---------- 50. GT 引用的 baseline 节名必须真实存在 ----------
+  {
+    // 只抓「紧跟在 baseline 引用之后」的引号名——同一行里别的引号不是节名引用
+    const refs = new Set();
+    const refRe = /`?\s*baseline(?:\.md)?`?\s*的?\s*[「"]([^「」"]{2,40})[」"]/g;
+    for (const l of gtRule.split('\n')) {
+      if (!l.includes('baseline')) continue;
+      for (const m of l.matchAll(refRe)) refs.add(m[1]);
+    }
+    let bad = 0;
+    // 守卫自身要被守：一条都找不到引用，说明这条检查已经恒真了——那比检查失效更糟
+    if (refs.size === 0) {
+      fail('evals/ground-truth-rule-engine.md 里一条 baseline 节名引用都没抓到——第 50 项检查已经恒真，正则必须跟着正文一起维护');
+      bad += 1;
+    }
+    for (const r of refs) {
+      if (!base.includes(r)) {
+        fail(`evals/ground-truth-rule-engine.md 引用了 baseline 的「${r}」，但 evals/baseline.md 里没有这一节——复核者按引用找不到对应条目`);
+        bad += 1;
+      }
+    }
+    if (bad === 0) ok(`GT 引用的 baseline 节名都真实存在（检查了 ${refs.size} 处）`);
+  }
+
+  // ---------- 51. 样本规模：唯一真相源、实测行数、各文件写法三者一致 ----------
+  {
+    function goLines(rel) {
+      let n = 0;
+      const walk = (d) => {
+        for (const e of readdirSync(d, { withFileTypes: true })) {
+          const p = join(d, e.name);
+          if (e.isDirectory()) walk(p);
+          else if (e.name.endsWith('.go')) {
+            const raw = readFileSync(p, 'utf8');
+            const parts = raw.split('\n');
+            n += parts.length - (raw.endsWith('\n') ? 1 : 0);
+          }
+        }
+      };
+      walk(join(dir, rel));
+      return n;
+    }
+    let bad = 0;
+    const canon = {};
+    for (const sample of ['tiny-shop', 'rule-engine']) {
+      const m = evalsReadme.match(new RegExp(`\`fixtures/${sample}/\`\\s*\\|\\s*(\\d+)\\s*行`));
+      if (!m) {
+        fail(`evals/README.md 的样本规模表里找不到 ${sample} 的行数`);
+        bad += 1;
+        continue;
+      }
+      canon[sample] = Number(m[1]);
+      const actual = goLines(`evals/fixtures/${sample}`);
+      if (actual !== canon[sample]) {
+        fail(`evals/README.md 写 ${sample} ${canon[sample]} 行，实测 ${actual} 行——样本改了但规模表没跟着改`);
+        bad += 1;
+      }
+    }
+    // GT 文件各自只讲一个样本，规模自述没点名样本时按它自己的样本算
+    const ownSample = {
+      'evals/ground-truth.md': 'tiny-shop',
+      'evals/ground-truth-rule-engine.md': 'rule-engine',
+    };
+    for (const rel of [
+      'evals/README.md',
+      'evals/ground-truth.md',
+      'evals/ground-truth-rule-engine.md',
+      'evals/runbook.md',
+      'evals/baseline.md',
+    ]) {
+      for (const l of read(rel)) {
+        // 规模自述有三种写法：点名了样本、写了「行 Go」、或紧跟在「样本」后面
+        // （GT 的「README 上限 200 行」这类引用不带这三种标记，不算规模自述）
+        for (const m of l.matchAll(/(\d{2,4})\s*行/g)) {
+          const num = Number(m[1]);
+          const before = l.slice(0, m.index);
+          const after = l.slice(m.index);
+          const near = ['tiny-shop', 'rule-engine']
+            .map((s) => ({ s, at: before.lastIndexOf(s) }))
+            .filter((x) => x.at >= 0 && before.length - x.at <= 40)
+            .sort((a, b) => b.at - a.at)[0];
+          const marked = /行\s*Go/.test(after) || /的结算模块/.test(after);
+          const nearSample = /样本.{0,12}?$/.test(before);
+          if (!near && !marked && !nearSample) continue;
+          const expected = near ? canon[near.s] : canon[ownSample[rel]];
+          if (expected === undefined) continue; // 认不出是哪个样本，不误伤
+          if (num !== expected) {
+            fail(`${rel} 里样本规模写成「${num} 行」，唯一真相源（evals/README.md 的样本规模表）是 ${expected} 行 —— ${l.trim().slice(0, 50)}`);
+            bad += 1;
+          }
+        }
+      }
+    }
+    if (bad === 0) {
+      ok(`样本规模一致（tiny-shop ${canon['tiny-shop']} 行 / rule-engine ${canon['rule-engine']} 行，与实测相同，各文件写法一致）`);
+    }
+  }
+
+  // ---------- 52. rubric 必须有「通过 / 不通过」的放行判据 ----------
+  {
+    const verdict = section(rubricLines, /^## 判定/);
+    let bad = 0;
+    if (verdict.length === 0) {
+      fail('evals/rubric.md 没有「## 判定」一节——没有放行判据时，某个维度整体漏扫在命中维度里完全看不见');
+      bad += 1;
+    } else {
+      const v = verdict.join('\n');
+      for (const token of ['通过', '不通过', '契约', '命中', '误报']) {
+        if (!v.includes(token)) {
+          fail(`evals/rubric.md 的「## 判定」一节里没有「${token}」——放行条件写不全`);
+          bad += 1;
+        }
+      }
+    }
+    if (bad === 0) ok('rubric.md 有完整的放行判据（契约分 + 命中 + 误报 三条门槛）');
+  }
+
+  // ---------- 53. 「改动文件 → 必须跑哪几轮」映射表不得有缺口 ----------
+  {
+    let bad = 0;
+    // 只看映射表的表体——runbook 别处也出现过 `README.md`，全文找 token 等于恒真
+    const rbLines = read('evals/runbook.md');
+    const idx = rbLines.findIndex((l) => l.includes('改动文件 → 必须跑哪几轮'));
+    if (idx === -1) {
+      fail('evals/runbook.md 找不到「改动文件 → 必须跑哪几轮」映射表');
+      bad += 1;
+    } else {
+      const rows = [];
+      // 标题与表体之间有一个空行，先跳过空行，再收连续的表行
+      for (let i = idx + 1; i < rbLines.length; i += 1) {
+        if (rbLines[i].trim() === '') continue;
+        if (!rbLines[i].startsWith('|')) break;
+        rows.push(rbLines[i]);
+      }
+      if (rows.length === 0) {
+        fail('evals/runbook.md 的改动→轮次映射表一行都没有');
+        bad += 1;
+      }
+      const table = rows.join('\n');
+      for (const token of ['`README.md`', 'evals/fixtures/**', 'evals/runbook.md', 'evals/README.md']) {
+        if (!table.includes(token)) {
+          fail(`evals/runbook.md 的「改动文件 → 必须跑哪几轮」映射表里没有 ${token}——改了它却不知道要跑哪几轮`);
+          bad += 1;
+        }
+      }
+    }
+    if (bad === 0) ok('改动→轮次映射表覆盖了 README / fixtures / runbook / evals README');
+  }
+
+  // ---------- 54. runbook 必须有「同轮次不并发」与「skill 全程冻结」两条可检查动作 ----------
+  {
+    let bad = 0;
+    if (!runbook.includes('并发')) {
+      fail('evals/runbook.md 没有「并发」规则——同一轮次并发跑同一份样本会互相污染');
+      bad += 1;
+    }
+    if (!runbook.includes('冻结')) {
+      fail('evals/runbook.md 没有「冻结」规则——评测期间改 skill 会让分数失去意义');
+      bad += 1;
+    }
+    if (!runbook.includes('rev-parse HEAD')) {
+      fail('evals/runbook.md 没有给出可执行的冻结检查命令（rev-parse HEAD）');
+      bad += 1;
+    }
+    if (bad === 0) ok('runbook 有「同轮次不并发」与「skill 全程冻结」两条规则，且给了可执行检查');
+  }
+}
+
+// ---------- 55. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
 console.log('');
