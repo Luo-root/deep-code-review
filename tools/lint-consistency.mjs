@@ -88,7 +88,8 @@ const CANONICAL_DIMENSIONS = [
   '设计', '方法契约', '实现', '文档', '硬编码', '重复', '过度设计',
   '错误路径与部分失败', '并发与生命周期', '安全', '兼容性', '可观测性', '性能', '规模与复杂度', '测试盲区',
 ];
-const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）', 'n 条'];{
+const CANONICAL_RESULTS = ['无发现', '已查（见 X）', '未扫（理由）', 'n 条'];
+{
   const tpl = read('references/output-template.md');
   const tables = [];
   let current = null;
@@ -772,7 +773,42 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 22. 本文件末尾才判定退出码 ----------
+// ---------- 22. 取值数量的声明必须与实际取值集合一致 ----------
+// 「结果格用四种取值」这类数字写在 4 个文件里。取值集合加了第 5 种而这些数字没跟着改，
+// 就会出现「契约说有 4 种、实际能写 5 种」——模型按哪份数字理解，决定了它会不会用第 5 种。
+{
+  const files = {
+    'SKILL.md': read('SKILL.md'),
+    'README.md': read('README.md'),
+    'references/output-template.md': read('references/output-template.md'),
+    'references/playbooks.md': read('references/playbooks.md'),
+  };
+  // 结果格实际有多少种合法取值（含第 5 种「n 条（级别），另见 X」）
+  const ACTUAL = 5;
+  const bad = [];
+  for (const [name, lines] of Object.entries(files)) {
+    for (const l of lines) {
+      if (!/结果格.*(四种|五种|三种|六种)取值|结果.*格用.*(种)取值/.test(l)) continue;
+      const m = l.match(/(三|四|五|六)种取值/);
+      if (!m) continue;
+      const CN = { 三: 3, 四: 4, 五: 5, 六: 6 };
+      if (CN[m[1]] !== ACTUAL) {
+        bad.push(`${name}：写着「${m[1]}种取值」，但实际合法取值有 ${ACTUAL} 种`);
+      }
+    }
+  }
+  if (bad.length) {
+    fail(
+      `取值数量的声明与实际取值集合不一致：\n    ${bad.join('\n    ')}\n` +
+        '结果格的合法取值集合由 lint 第 3 项的正则决定；往里加一种取值时，' +
+        '所有写着「N 种取值」的地方都要一起改——数字漂了，模型就不知道该不该用新写法。',
+    );
+  } else {
+    ok(`各处「取值数量」的声明与实际取值集合一致（${ACTUAL} 种）`);
+  }
+}
+
+// ---------- 23. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
 console.log('');
