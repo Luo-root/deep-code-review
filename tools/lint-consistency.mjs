@@ -117,7 +117,7 @@ const EXAMPLE_BLOCKS = [
   { rel: 'references/output-template.md', kind: 'full', want: 1, needClaim: true },
   { rel: 'README.md', kind: 'full', want: 1, needClaim: true },
   { rel: 'references/regression-review.md', kind: 'fast', want: 1, needClaim: true },
-  { rel: 'references/regression-review.md', kind: 'fastishZero', want: 1, needClaim: false },
+  { rel: 'references/regression-review.md', kind: 'fastishZero', want: 1, needClaim: true },
 ];
 
 /** 按 EXAMPLE_BLOCKS 的形态取示例块；命中数不等于 1 时返回 null（调用方必须报红） */
