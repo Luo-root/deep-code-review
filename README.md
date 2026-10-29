@@ -117,22 +117,16 @@
 
 ## 快速开始
 
-### Mavis（MiniMax Code）
+把仓库地址交给你的 Agent，让它自己装：
 
-```powershell
-git clone https://github.com/Luo-root/deep-code-review.git "$env:USERPROFILE\.minimax\skills\deep-code-review"
+```text
+安装这个 Skill：https://github.com/Luo-root/deep-code-review
 ```
 
-### Agent Skills 目录布局
-
-```bash
-git clone https://github.com/Luo-root/deep-code-review.git ~/.claude/skills/deep-code-review
-```
+装好之后直接用——`SKILL.md` 的 frontmatter 只有 `name` 与 `description`，按 Agent Skills 的目录布局都能加载。
 
 > Windows 上请保持仓库的 `.gitattributes` 生效（`* text=auto eol=lf`）。skill 文件被换成 CRLF 后，
 > 以正则解析 frontmatter 的工具会读不到 `name` 与 `description`——那不是文件坏了，是解析器的限制。
-
-`SKILL.md` 的 frontmatter 只使用 `name` 与 `description`，按 Agent Skills 的目录布局可以加载；本仓库主要在 Mavis 上验证，其他运行时未逐一验证，欢迎反馈。
 
 ### 用法
 
