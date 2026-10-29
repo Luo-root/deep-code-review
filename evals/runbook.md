@@ -20,16 +20,27 @@ node tools/lint-consistency.mjs .  # 必须 exit 0
 
 ```bash
 # 把样本复制到临时目录，别在仓库里改
-cp -r evals/fixtures/tiny-shop /tmp/dcr-eval
-cp -r evals/fixtures/rule-engine /tmp/dcr-eval-rule
+# 每个轮次一份独立副本——轮次之间不共用目录（见「常见坑」）
+cp -r evals/fixtures/tiny-shop /tmp/dcr-eval-A
+cp -r evals/fixtures/tiny-shop /tmp/dcr-eval-B
+cp -r evals/fixtures/tiny-shop /tmp/dcr-eval-C
+cp -r evals/fixtures/rule-engine /tmp/dcr-eval-rule-B
+cp -r evals/fixtures/rule-engine /tmp/dcr-eval-rule-C
 ```
 
 Windows PowerShell：
 
 ```powershell
-Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval
-Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule
+Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval-A
+Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval-B
+Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval-C
+Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule-B
+Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule-C
 ```
+
+> **为什么每个轮次一份副本**：轮次之间共用同一个目录，后一轮会读到磁盘上前一轮留下的结论，那一轮作废。
+> 这条与「常见坑」里的并发纪律是同一件事的两面——**同一轮次不要并发跑同一份样本的多个副本，
+> 不同轮次也不要共用一个目录**。
 
 > **不要把 `ground-truth.md` / `ground-truth-rule-engine.md` / `rubric.md` 放进被审目录**——被测模型看到标准答案，这次评测就废了。
 >
@@ -100,10 +111,13 @@ git commit -m "feat: 新增退款流程"
 
 | 轮次 | 问法 | 期望 |
 |---|---|---|
-| A | `审一下 /tmp/dcr-eval 这个 PR 有没有回归，能不能合` | 样本**没有 git 历史** → 按契约走**无基线全量体检**：范围行写「（无基线，全量体检）」、标签第三段 `[现状]`、结论档读作「本路径没有/有必须改的问题」 |
-| B | `用 deep-code-review 按七维审 /tmp/dcr-eval` | 全量模式：七维 + 类型 playbook + 七段式 + 覆盖表 |
-| C | `给 /tmp/dcr-eval/internal 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 G2/G3/G6/G9 这些「设计类」条目 |
+| A | `审一下 /tmp/dcr-eval-A 这个 PR 有没有回归，能不能合` | 样本**没有 git 历史** → 按契约走**无基线全量体检**：范围行写「（无基线，全量体检）」、标签第三段 `[现状]`、结论档读作「本路径没有/有必须改的问题」 |
+| B | `用 deep-code-review 按七维审 /tmp/dcr-eval-B` | 全量模式：七维 + 类型 playbook + 七段式 + 覆盖表 |
+| C | `给 /tmp/dcr-eval-C/internal 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 G2/G3/G6/G9 这些「设计类」条目 |
 | D | `审一下 /tmp/dcr-eval-d 这个 PR 有没有回归，能不能合`（样本**带 git 基线**） | 走**快模式**：紧凑列表（每条 = 标题 + 3 行）、只报本次引入的问题、标签第三段 `[本次引入]`；**不应**输出七段式骨架 |
+
+> **路径带轮次后缀**：每个轮次读自己的副本（复制步骤见上面「准备」）。
+> 轮次之间共用一个目录时，后一轮会读到前一轮留在磁盘上的结论，那一轮作废。
 
 **A 轮不是快模式轮。** 快模式判的是「本次改动有没有坏」，没有基线就没有「本次改动」可言——契约规定快模式必须有基线，而样本是裸目录，所以它走**无基线全量体检**，输出七段式是**正确行为**，不是「快模式没生效」。首轮评测的验收条件写的是「A 轮应输出紧凑列表」，那一条与实际行为对不上，已作废。
 
@@ -117,8 +131,8 @@ git commit -m "feat: 新增退款流程"
 
 | 轮次 | 问法 | 期望 |
 |---|---|---|
-| B | `用 deep-code-review 按七维审 /tmp/dcr-eval-rule` | 全量模式：七维 + **反驳** + **规模扫描** + 七段式 + 覆盖表 |
-| C | `给 /tmp/dcr-eval-rule/internal/promo 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 R1/R3/R4/R5/R6 这些「规模 + 语义」条目 |
+| B | `用 deep-code-review 按七维审 /tmp/dcr-eval-rule-B` | 全量模式：七维 + **反驳** + **规模扫描** + 七段式 + 覆盖表 |
+| C | `给 /tmp/dcr-eval-rule-C/internal/promo 这个模块做个体检，看看设计、契约、重复、过度设计` | 全量模式，且应命中 R1/R3/R4/R5/R6 这些「规模 + 语义」条目 |
 
 **规模类条目在报告里的形态**：给「规模 N → 开销」的关系与实测数字，不是「输入 → 错误结果」那种触发路径。报告没给数字的，按 `ground-truth-rule-engine.md` 的计分要点最多记 0.5。
 
@@ -141,8 +155,9 @@ git commit -m "feat: 新增退款流程"
 - **原始输出目录与样本目录不要有父子关系**，也不要放在同一个父目录下——
   被测上下文有可能往父目录翻，命中任何一份历史评审都会污染这一轮。
 - **两个样本的隔离目录也要分开**，理由同上：rule-engine 的标准答案和 tiny-shop 的不能互相可见。
-- **同一轮次不要并发跑同一份样本的多个副本**。每个轮次用独立目录（`$env:TEMP\dcr-eval-{A,B,C,D}`）——
+- **同一轮次不要并发跑同一份样本的多个副本**。每个轮次用独立目录（`$env:TEMP\dcr-eval-{A,B,C,D}`、rule-engine 用 `dcr-eval-rule-{B,C}`）——
   并发跑同一个样本时，后一轮会读到磁盘上前一轮留下的结论，那一轮作废。
+  **不同轮次之间也不共用一个目录**——准备步骤里的复制必须带轮次后缀。
 - **skill 全程冻结**。开跑前记一次 skill 安装目录的提交号，收轮再核对一次；不一致这轮作废。
   评测期间改过任何 `SKILL.md` / `references/` 文件，整轮分数就失去意义——测的是移动靶。
   这两类污染历史上都真发生过（见 `baseline.md` 的 v4 轮「作废原因」）。
