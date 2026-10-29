@@ -25,6 +25,15 @@ function fail(msg) {
 function ok(msg) {
   console.log(`[OK]   ${msg}`);
 }
+/**
+ * 「这条检查没跑到」的独立状态。
+ * 为什么必须是第三种状态：绿色 `[OK]` 表示「查过且通过」。把**跳过**也印成 OK，
+ * 结果就是「跳过」与「通过」在输出上长得一模一样——CI 全绿，读的人以为查过了。
+ * 跳过一律走这条：不参与退出码，但输出里一眼可见。
+ */
+function skip(msg) {
+  console.log(`[SKIP] ${msg}`);
+}
 
 function read(rel) {
   const p = join(dir, rel);
@@ -482,16 +491,50 @@ function looksLikeTag(level, dim, origin) {
     }
 
     // 结果格必须每行都有结论——覆盖表的全部意义就是「我扫过了」的凭证。
-    // 例外是骨架模板：它整张都空（模型照着填）。所以规则是**要么整张都空、要么整张都不空**：
-    // 此前空格子被直接跳过，示例里空一行照样全绿，而模型会照抄那个空格。
+    // 例外只有**骨架模板那一张**：它整张都空（模型照着填）。
+    //
+    // 此前豁免判据是「这张表的结果格全空」→「整张空就是骨架模板」。于是零发现示例那张表
+    // （模型写「可以合」时照抄的那张）只要所有结果格都空就被整张豁免：把两行实行整行删掉、
+    // 只留省略行，lint 全绿，输出照旧印「覆盖表每行都有结论」。
+    // 而契约明写「覆盖表在零发现时也要写：它正是『我扫过了』与『压根没扫』的区分」——
+    // 清空这张表，等于把契约最想保住的那条保证从示例里删掉。
+    // 现在豁免**按块定位**：用 pickBlock(tpl, 'skeleton') 精确取出骨架块，
+    // 只有「与骨架块里那张表逐行相同」**且结果格确实整张留空**的表才允许豁免
+    //（两个条件缺一不可：只按块认，骨架表被填了一半也照样豁免；只按「全空」认，
+    //  任何一张被清空的表都能冒充骨架——这正是原来的洞）。
+    // 定位不到骨架块时**不豁免**（fail closed）：豁免不了就别猜。
+    const skelBlock = pickBlock(tpl, 'skeleton');
+    const skelTables = skelBlock ? coverageTables(skelBlock.split('\n')) : [];
+    const isSkeletonTable = (t) => skelTables.some(
+      (st) => st.length === t.length && st.every((l, i) => l === t[i]),
+    );
+    const resultCellsOf = (t) => (t.some((l) => !isOmissionRow(l))
+      ? t.filter((l) => !isOmissionRow(l)).map((l) => l.split('|')[2].trim())
+      : t.map((l) => l.split('|')[2].trim()));
+    const isBlankSkeleton = (t) => isSkeletonTable(t) && resultCellsOf(t).every((c) => !c);
+    if (!skelBlock) {
+      fail(
+        '定位不到骨架模板块（没有「覆盖表 + ## 必须修 + 无五项计数」的唯一一块）——' +
+          '「整张留空」的豁免无从按块判断，这一项不能靠「整张空」去猜',
+      );
+      bad += 1;
+    }
     const blankBad = [];
+    let blankChecked = 0;
+    let skeletonExempt = 0;
     for (const [ti, t] of tables.entries()) {
+      if (isBlankSkeleton(t)) { skeletonExempt += 1; continue; }
       // 省略行用**同一个判定**（isOmissionRow）：此前只滤掉含「…」的行，
       // 而 README 的示例用的是「...」——那一张表会被误报成「覆盖表有行没有结论」。
       const rows = t.filter((l) => !isOmissionRow(l));
+      blankChecked += 1;
+      // 除省略行之外一行实行都没有 = 整张表被删空了。这张表此刻「结果格全空」，
+      // 按旧判据会被当成骨架豁免掉——所以这一条必须单独判。
+      if (!rows.length) {
+        blankBad.push(`第 ${ti + 1} 张覆盖表除省略行外一行都没有——整张表被删空了`);
+        continue;
+      }
       const cells = rows.map((l) => l.split('|')[2].trim());
-      const nonEmpty = cells.filter((c) => c).length;
-      if (!nonEmpty) continue; // 整张空 = 骨架模板
       const blanks = cells.filter((c) => !c).length;
       if (blanks) blankBad.push(`第 ${ti + 1} 张覆盖表有 ${blanks} 行没有结论`);
     }
@@ -502,7 +545,11 @@ function looksLikeTag(level, dim, origin) {
       );
       bad += 1;
     } else {
-      ok('覆盖表每行都有结论（骨架模板整张留空是允许的）');
+      // 「跳过」与「通过」分开写：骨架那张是**按块定位豁免**的，不是「查过且通过」。
+      ok(
+        `覆盖表每行都有结论（实检 ${blankChecked} 张表；骨架模板整张留空是允许的，` +
+          `按块定位豁免 ${skeletonExempt} 张）`,
+      );
     }
 
     // 「查了什么」列不能是模板句——契约点名禁止「只写维度名」「已全面检查」「模板句」，
@@ -562,11 +609,11 @@ function looksLikeTag(level, dim, origin) {
     const emptyWhat = [];
     const tokenMisuse = [];
     for (const [ti, t] of tables.entries()) {
-      // 判断这是不是骨架空模板：结果格全空
-      const resultCells = t.map((l) => l.split('|')[2].trim());
-      const isBlankTemplate = resultCells.every((c) => !c);
-      if (isBlankTemplate) {
-        ok(`第 ${ti + 1} 张覆盖表是空模板（骨架），跳过「查了什么」列非空检查`);
+      // 骨架空模板**按块定位**（与上面「每行都要有结论」用同一个判定）。
+      // 此前判据是「结果格全空」——零发现示例那张表一旦被清空，也会被当成骨架跳过，
+      // 于是它的「查了什么」列一起免检。跳过一律印 [SKIP]，不印绿色 OK。
+      if (isSkeletonTable(t)) {
+        skip(`第 ${ti + 1} 张覆盖表是骨架模板（按块定位），「查了什么」列非空检查对这张表不适用`);
         continue;
       }
       for (const l of t) {
@@ -672,8 +719,17 @@ function looksLikeTag(level, dim, origin) {
     }
   }
   // 任何示例块里的 `##` 小节名都必须是规范段名
-  for (const rel of ['references/output-template.md', 'README.md', 'references/regression-review.md']) {
+  //
+  // 文件清单**从磁盘推导**（复用 contractFiles()，第 6 / 31 / 38 项早就这么做）：
+  // 此前这里是手写的三个文件——新增一个 `references/*.md` 并按规矩登记进 SKILL.md 的读文件表之后
+  //（登记由第 43 项与 lint-skill 的孤儿检查把关，两项都会过），它里面的示例块**整块不被检查**：
+  // 小节名写成「## 我自己的小节」、段名被改名，两个 lint 全绿。
+  // 这正是第 24 轮 R24A-04「手写文件清单 = 新增文件整份内容逃过检查」在同一处的残留。
+  const blockFiles = contractFiles();
+  let blockScanned = 0;
+  for (const rel of blockFiles) {
     fencedBlocks(read(rel)).forEach((b, bi) => {
+      blockScanned += 1;
       b.split('\n')
         .filter((l) => /^##\s/.test(l))
         .forEach((l) => {
@@ -688,7 +744,12 @@ function looksLikeTag(level, dim, origin) {
         });
     });
   }
-  if (!bad) ok('七段结构在 SKILL.md / output-template.md / README.md 里段名与顺序一致（骨架块与示例块逐块核对）');
+  if (!bad) {
+    ok(
+      `七段结构在 SKILL.md / output-template.md / README.md 里段名与顺序一致` +
+        `（骨架块与示例块逐块核对；示例块的段名扫描覆盖了磁盘上的 ${blockFiles.length} 个契约文件 / ${blockScanned} 个代码块）`,
+    );
+  }
 }
 
 // ---------- 5. 结论计数格式：多处必须逐字相同 ----------
@@ -958,35 +1019,71 @@ function looksLikeTag(level, dim, origin) {
     // 覆盖表声明的「n 条（级别）」必须在正文里数得出来。
     // 双向对账（正文多出的条目、写「无发现」却有该维度条目）由第 24 项负责，
     // 结论计数与正文的一致性由第 23 项负责——这里只保留本项独有的「按级别数」这一层。
+    //
+    // 此前这一层是**整块跳过**：
+    //     if (block.includes('...') || block.includes('…')) ok('…跳过…'); else { …逐行核对… }
+    // 省略号是**行**的概念（省略行），不是**块**的概念。往示例散文里加一个省略号
+    //（「……」「...」都是完全自然的中文写法）就能把整块对账关掉，而且关掉之后还打印一行**绿色的**「跳过」。
+    // 代价是：覆盖表把级别写错（`1 条（P2）` → `1 条（P3）`，正文仍是 `[P2]`）时 CI 全绿——
+    // 而「级别」这一层全仓库只有这一项在查（第 23/24 项只看条数）。
+    //
+    // 现在：① **逐行**判断，只跳过「行名含省略号」的省略行（复用 isOmissionRow），其余行照常对账；
+    //      ② 省略行一旦出现，打印**独立状态行 `[SKIP]`**（不是绿色 OK，也不与「对得上」混在一起）；
+    //      ③ 加下限守卫：扫到的「声明了条目数」的行数少于下限就报红——
+    //         下限是个**独立常量**，不由被检文件里的行数反算出来，所以「把声明行删光」会撞上它。
     const block = tplBlocks[0];
-    if (block.includes('...') || block.includes('…')) {
-      ok('示例块里有省略号，跳过「覆盖表声明 ↔ 正文条目」逐行核对');
+    const MIN_LEVEL_DECLARED_ROWS = 3;
+    const declaredRows = block
+      .split('\n')
+      .filter((l) => /^\|\s*[^-|\s][^|]*\|/.test(l) && /\|\s*\d+ 条（.+）(，另见 .+)?\s*\|/.test(l));
+    // 省略行要在**整张表**里认（它的结果格是空的，所以不会进 declaredRows）
+    const omissionRows = block
+      .split('\n')
+      .filter((l) => /^\|\s*[^-|\s][^|]*\|/.test(l) && isOmissionRow(l));
+    const rows = declaredRows.filter((l) => !isOmissionRow(l));
+    const missing = [];
+    for (const r of rows) {
+      const cells = r.split('|').map((c) => c.trim());
+      const dim = cells[1];
+      // 「N 条（级别）」与「N 条（级别），另见 X」都要能解析出条数与级别
+      const m = cells[2].match(/^(\d+) 条（(.+)?）(，另见 .+)?$/);
+      if (!m) continue;
+      const [, n, level] = m;
+      if (!level) continue;
+      const tag = `[${level}][${dim}]`;
+      const count = block.split(tag).length - 1;
+      if (count < Number(n)) {
+        missing.push(`${dim} 声明 ${n} 条（${level}），正文里只找到 ${count} 处 ${tag}`);
+      }
+    }
+    if (omissionRows.length) {
+      skip(
+        `示例的覆盖表里有 ${omissionRows.length} 个省略行——这一项的级别对账对它们是「部分跳过」，` +
+          '不参与逐行核对（全量示例本就禁止省略行，第 2/3 项会同时报红）',
+      );
+    }
+    if (missing.length) {
+      fail(
+        `示例的覆盖表与正文对不上：\n    ${missing.join('\n    ')}\n` +
+          '「结论里写的每个数字都要在正文里数得出来」——示例自己得先做到。',
+      );
+      bad += 1;
+    } else if (rows.length < MIN_LEVEL_DECLARED_ROWS) {
+      // 下限守卫：扫到的声明行太少 = 这一项已经扫不到东西，不许当作通过。
+      fail(
+        `示例的覆盖表里只扫到 ${rows.length} 行「n 条（级别）」声明，低于下限 ${MIN_LEVEL_DECLARED_ROWS} 行——` +
+          '这一项要么被删空了、要么覆盖表把结果格改成了别的取值形态，级别对账已经失效',
+      );
+      bad += 1;
+    } else if (omissionRows.length) {
+      // 有省略行时分**只印 [SKIP]**，不再印绿色 OK：跳过的那几行没有核对过，
+      // 「对得上」这句话只对已核对的行成立，混在一行绿字里就会被当成整张表都过了。
+      skip(
+        `示例的覆盖表声明与正文条目：已逐行核对的 ${rows.length} 行都对得上，` +
+          `${omissionRows.length} 个省略行未参与核对`,
+      );
     } else {
-      const rows = block.split('\n').filter((l) => /^\|\s*[^-|\s][^|]*\|/.test(l) && /\|\s*\d+ 条（.+）(，另见 .+)?\s*\|/.test(l));
-      const missing = [];
-      for (const r of rows) {
-        const cells = r.split('|').map((c) => c.trim());
-        const dim = cells[1];
-        // 「N 条（级别）」与「N 条（级别），另见 X」都要能解析出条数与级别
-        const m = cells[2].match(/^(\d+) 条（(.+)?）(，另见 .+)?$/);
-        if (!m) continue;
-        const [, n, level] = m;
-        if (!level) continue;
-        const tag = `[${level}][${dim}]`;
-        const count = block.split(tag).length - 1;
-        if (count < Number(n)) {
-          missing.push(`${dim} 声明 ${n} 条（${level}），正文里只找到 ${count} 处 ${tag}`);
-        }
-      }
-      if (missing.length) {
-        fail(
-          `示例的覆盖表与正文对不上：\n    ${missing.join('\n    ')}\n` +
-            '「结论里写的每个数字都要在正文里数得出来」——示例自己得先做到。',
-        );
-        bad += 1;
-      } else {
-        ok(`示例的覆盖表声明与正文条目对得上（${rows.length} 行声明了条目数）`);
-      }
+      ok(`示例的覆盖表声明与正文条目对得上（逐行核对了 ${rows.length} 行声明了条目数的行）`);
     }
   }
   if (!bad) {
@@ -1038,18 +1135,58 @@ function looksLikeTag(level, dim, origin) {
 }
 
 // ---------- 14. 结论档（可以合 / 改完再合 / 方向先定）在三处必须一致 ----------
+// 枚举源必须**独立于被检的那一行**。此前：
+//     for (const v of VERDICTS) { if (!skillLine.includes(v)) continue; … }
+// —— SKILL.md 那一行少一档就 `continue`，另两处根本不查、也不报红，而 OK 行照旧把三档全列出来。
+// 「SKILL.md 少一档」恰恰是这一项唯一要防的情形（报错文案自己写着「少一档，模型就得自己发明一档」）。
+// 现在改成**双向对账**：
+//   ① 三档清单从 SKILL.md 的「结论档按这张表选」决策表**推导**（那张表是唯一真相源，第 17 项也在用），
+//      不在代码里另写一份常量——两份清单必然漂；
+//   ② 先断言 SKILL.md 的「总体结论（…）」那一行**三档齐全**（少一档直接报红）；
+//   ③ 再对每一档断言 output-template.md 与 frontmatter.description 也有；
+//   ④ OK 行打印**实际比对到的档数与档名**，不把三档硬编码进文案。
 {
-  const VERDICTS = ['可以合', '改完再合', '方向先定'];
   const skill = read('SKILL.md');
+  const verdicts = [];
+  const tableAt = skill.findIndex((l) => l.includes('结论档按这张表选'));
+  if (tableAt !== -1) {
+    let started = false;
+    for (let i = tableAt + 1; i < skill.length; i += 1) {
+      const l = skill[i];
+      if (!started) {
+        if (!l.trim()) continue;
+        if (!l.trim().startsWith('|')) break;
+        started = true;
+      }
+      if (!l.trim().startsWith('|')) break;
+      if (/^\|\s*-{2,}/.test(l)) continue;
+      if (/^\|\s*情况\s*\|/.test(l)) continue;
+      const cells = l.split('|').slice(1, -1).map((c) => c.trim());
+      const name = (cells[1] ?? '').replace(/\*/g, '').trim();
+      if (name && !verdicts.includes(name)) verdicts.push(name);
+    }
+  }
   const skillLine = skill.find((l) => l.includes('总体结论（'));
   const tplLine = read('references/output-template.md').find((l) => l.includes('结论：**可以合 / 改完再合'));
   const desc = frontmatterBlock(skill, 'description');
   const offenders = [];
-  if (!skillLine) {
+  if (!verdicts.length) {
+    // 枚举源空 = 本项会恒真，必须报红而不是静默通过
+    fail(
+      '结论档的枚举源为空：SKILL.md 的「结论档按这张表选」决策表里没解析出任何结论档——' +
+        '这一项没有清单可对账，检查已经失效',
+    );
+  } else if (!skillLine) {
     offenders.push('SKILL.md 里找不到「总体结论（…）」那一行');
   } else {
-    for (const v of VERDICTS) {
-      if (!skillLine.includes(v)) continue;
+    // ① SKILL.md 这一侧必须**三档齐全**：少一档就是模型要自己发明一档
+    for (const v of verdicts) {
+      if (!skillLine.includes(v)) {
+        offenders.push(`SKILL.md 的「总体结论（…）」那一行没有「${v}」——决策表里有这一档，总体结论却不给出，读者只能自己发明`);
+      }
+    }
+    // ② 另两处逐档对账
+    for (const v of verdicts) {
       if (!tplLine || !tplLine.includes(v)) offenders.push(`output-template.md 的结论行没有「${v}」`);
       if (!desc.includes(v)) offenders.push(`frontmatter.description 没有「${v}」`);
     }
@@ -1060,8 +1197,11 @@ function looksLikeTag(level, dim, origin) {
         '三档结论在 SKILL.md / references/output-template.md / frontmatter.description 里必须是同一组——' +
         '少一档，模型就得自己发明一档。',
     );
-  } else {
-    ok('结论档（可以合 / 改完再合 / 方向先定）在 SKILL.md / output-template.md / description 里一致');
+  } else if (verdicts.length) {
+    ok(
+      `结论档三处一致（SKILL.md 的总体结论行 / output-template.md 的结论行 / frontmatter.description ` +
+        `都写全了实际比对到的 ${verdicts.length} 档：${verdicts.join(' / ')}；清单从决策表推导，不是硬编码）`,
+    );
   }
 }
 
@@ -2035,7 +2175,22 @@ function parsePlaybookSections(pb) {
   // 契约改了条目数就要同步这里，并说明理由——否则这一项会静默失效）。
   const MIN_TRACE_ITEMS = 4;
   const MIN_TRACE_BLOCKS = 2;
-  for (const rel of ['references/output-template.md', 'README.md', 'references/regression-review.md']) {
+  // 文件清单**从磁盘推导**（contractFiles()）：此前是手写的三个文件，
+  // 于是新增一个 `references/*.md` 并登记进 SKILL.md 之后，它里面的
+  // 「- 兼容：看着好像没问题。」这种没有验证方式的条目整块逃过检查——
+  // 连带把下限守卫也绕过了（下限数的是旧文件里那 4 条）。
+  const blockFiles = contractFiles();
+  // 与 EXAMPLE_BLOCKS 对账：**登记过的**每一个示例块，只要它含「已查过没问题」这一节，就必须被扫到。
+  // 光有「下限 ≥ N 条」不够——N 可以由别的块凑满，而某一个块整块没进扫描。
+  const HEAD_OK = (b) => b.split('\n').some(
+    (l) => /^##\s/.test(l) && normSection(l.replace(/^##\s+/, '')) === '已查过没问题',
+  );
+  let expectedBlocksWithSection = 0;
+  for (const entry of EXAMPLE_BLOCKS) {
+    const b = exampleBlock(entry.rel, entry.kind);
+    if (b && HEAD_OK(b)) expectedBlocksWithSection += 1;
+  }
+  for (const rel of blockFiles) {
     for (const b of fencedBlocks(read(rel))) {
       const blines = b.split('\n');
       // 按结构定位：块内 `## ` 开头的标题里，段名属于规范段名集合的那一个
@@ -2075,10 +2230,18 @@ function parsePlaybookSections(pb) {
         '要么示例里这一段被改名或删掉了，要么这一项已经扫不到东西了。' +
         '小节被改名的话，第 4 项会同时报红（示例块里的段名不是规范段名）。',
     );
+  } else if (blocksWithSection < expectedBlocksWithSection) {
+    // 与 EXAMPLE_BLOCKS 的对账（R25A-02）：登记的示例块里有几个含这一节，
+    // 就必须有几个块被扫到。否则「条数够」可以由旧文件凑满，而新文件里的坏示例整块漏过。
+    fail(
+      `示例「已查过没问题」只扫到 ${blocksWithSection} 个块，但契约登记的示例块里有 ` +
+        `${expectedBlocksWithSection} 个含这一节——有示例块没进扫描（新增文件里的坏条目就是这样漏掉的）`,
+    );
   } else {
     ok(
       `示例「已查过没问题」这一段的下限守卫有效（扫到 ${itemChecked} 条 / ${blocksWithSection} 个块，` +
-        `下限 ${MIN_TRACE_ITEMS} 条 / ${MIN_TRACE_BLOCKS} 个块）`,
+        `下限 ${MIN_TRACE_ITEMS} 条 / ${MIN_TRACE_BLOCKS} 个块；与 EXAMPLE_BLOCKS 对账：` +
+        `${blocksWithSection}/${expectedBlocksWithSection} 个含该小节的示例块都被扫到）`,
     );
   }
 }
@@ -2356,33 +2519,62 @@ function parsePlaybookSections(pb) {
 {
   const SKILL = read('SKILL.md');
   const README = read('README.md');
-  const rowOf = (lines, marker) => lines.find((l) => /^\|\s*做什么\s*\|/.test(l));
-  const a = rowOf(SKILL, 'SKILL.md');
-  const b = rowOf(README, 'README.md');
+  const rowOf = (lines) => lines.find((l) => /^\|\s*做什么\s*\|/.test(l));
+  const a = rowOf(SKILL);
+  const b = rowOf(README);
   const bad = [];
   if (!a) bad.push('SKILL.md 里找不到两档模式表的「做什么」行');
   if (!b) bad.push('README.md 里找不到两档模式表的「做什么」行');
+  /**
+   * 列位解析：**先剥掉首尾的空格子**，再按列取。
+   * 行以 `|` 开头、以 `|` 结尾，所以 `split('|')` 的首尾各多一个空串：
+   *   "| 做什么 | 快模式 | 全量模式 |" → ["", "做什么", 快模式, 全量, ""]
+   * 此前直接按 split 结果取 ca[1] / ca[2] 循环 col=1..2：
+   *   ca[1] = **行标签**（两表都是「做什么」，五个 token 一个都不在里面 → 恒等比较，查不出任何东西）
+   *   ca[2] = 快模式格
+   *   ca[3] = 全量模式格 ← 循环永远够不到
+   * 于是**全量模式那一格从来没被比对过**，而这一项要抓的正是这一格的漂移。
+   * 现在 slice(1,-1) 之后得到 ['做什么', 快模式, 全量]，索引 1 / 2 就是两档模式格。
+   */
+  const cellsOf = (l) => l.split('|').slice(1, -1).map((c) => c.trim());
+  // 列数下限守卫：行标签 + 快模式 + 全量 = 3 格。少于 3 格说明表结构变了
+  //（少一列 / 把两档并成一格），那时按列位取格必然错位——必须先修这里，
+  // 而不是让检查静默地少比一格。
+  const MIN_MODE_CELLS = 3;
+  const MODES = [
+    { col: 1, name: '快模式' },
+    { col: 2, name: '全量模式' },
+  ];
+  // 关键 token：这些词决定「这一档跑什么」，缺一个就说明两表说法不同
+  const TOKENS = [
+    { t: '类型 playbook', why: '类型 playbook 必查项跑不跑' },
+    { t: '七维', why: '七维跑不跑' },
+    { t: '规模扫描', why: '规模扫描跑不跑' },
+    { t: '反驳', why: '反驳跑不跑' },
+    { t: '证伪', why: '证伪跑不跑' },
+  ];
+  let comparedCells = 0;
   if (a && b) {
-    // 逐格比对：两表都是三列（表头 / 快模式 / 全量），取第 2、3 格
-    const ca = a.split('|').map((c) => c.trim());
-    const cb = b.split('|').map((c) => c.trim());
-    // 关键 token：这些词决定「这一档跑什么」，缺一个就说明两表说法不同
-    const TOKENS = [
-      { t: '类型 playbook', why: '类型 playbook 必查项跑不跑' },
-      { t: '七维', why: '七维跑不跑' },
-      { t: '规模扫描', why: '规模扫描跑不跑' },
-      { t: '反驳', why: '反驳跑不跑' },
-      { t: '证伪', why: '证伪跑不跑' },
-    ];
-    for (let col = 1; col <= 2; col += 1) {
-      for (const { t, why } of TOKENS) {
-        const inA = (ca[col] ?? '').includes(t);
-        const inB = (cb[col] ?? '').includes(t);
-        if (inA !== inB) {
-          bad.push(
-            `「${why}」两表不一致：SKILL.md 的${col === 1 ? '快模式' : '全量模式'}格${inA ? '有' : '没有'}「${t}」，` +
-              `README.md 的同一格${inB ? '有' : '没有'}`,
-          );
+    const ca = cellsOf(a);
+    const cb = cellsOf(b);
+    if (ca.length < MIN_MODE_CELLS || cb.length < MIN_MODE_CELLS) {
+      bad.push(
+        `两档模式表的列数不对：SKILL.md 的「做什么」行 ${ca.length} 格、README.md ${cb.length} 格` +
+          `（至少 ${MIN_MODE_CELLS} 格 = 行标签 + 快模式 + 全量模式）——` +
+          '列位一变，按列位比对就必然错位，先改这里再改表',
+      );
+    } else {
+      for (const mode of MODES) {
+        comparedCells += 1;
+        for (const { t, why } of TOKENS) {
+          const inA = (ca[mode.col] ?? '').includes(t);
+          const inB = (cb[mode.col] ?? '').includes(t);
+          if (inA !== inB) {
+            bad.push(
+              `「${why}」两表不一致：SKILL.md 的${mode.name}格${inA ? '有' : '没有'}「${t}」，` +
+                `README.md 的同一格${inB ? '有' : '没有'}`,
+            );
+          }
         }
       }
     }
@@ -2393,7 +2585,12 @@ function parsePlaybookSections(pb) {
         '两张表面向不同读者，但说的必须是同一件事——否则按 README 理解的读者和按 SKILL.md 执行的模型会得出相反结论。',
     );
   } else {
-    ok('SKILL.md 与 README.md 的两档模式表对「跑什么」说的一致');
+    // OK 行写清**实际比了哪几列**：只比一列时不许说「对『跑什么』说的一致」。
+    ok(
+      `SKILL.md 与 README.md 的两档模式表的「做什么」行对「跑什么」说的一致` +
+        `（实际比对了 ${MODES.slice(0, comparedCells).map((m) => m.name).join(' + ')} 两格 × ${TOKENS.length} 个关键 token；` +
+        '行标签格不参与比对）',
+    );
   }
 }
 
@@ -3314,28 +3511,60 @@ function parsePlaybookSections(pb) {
     // 于是「184 行的结算模块 + 377 行的规则引擎」那一句写错也没人管。
     const scanFiles = evalsScanFiles;
     /**
-     * 归属：**这个文件讲哪个样本**——不靠句子里有没有样本名。
-     *   GT 文件只讲一个样本：文件名里带样本名的（ground-truth-rule-engine.md）直接认；
-     *   其余从它自己的规模自述（「N 行 Go」）反查；都认不出 → 归属为空 → 下面的规模自述
-     *   会被判成「认不出是哪个样本」并报红（而不是静默跳过）。
-     *   README / runbook / baseline 这些文件讲**两个**样本：每个规模自述数字都要跟
-     *   其中一个对得上；两个都对不上 = 认不出 = 报红。
+     * 归属分两层，**都不从「这个文件自己写了多少行」反推**：
+     *
+     * 文件级归属（`ownerOf`）——这个文件整体讲哪个样本：
+     *   ① 文件里有一行机器可读声明「本文件是 <样本> 的标准答案」（契约要加就加这一行）；
+     *   ② 文件名里带样本名（`ground-truth-rule-engine.md`）；
+     *   ③ 正文提到唯一的 `fixtures/<样本>` 路径（`ground-truth.md` 第 3 行写着 `fixtures/tiny-shop`）；
+     *   ④ 都认不出 → null（**不再**读它自己写的「N 行 Go」去反查——那是自证：
+     *      把 tiny-shop 的 184 改成 377，检查会认定「这个文件讲 rule-engine」，再用 377 校验 377）。
+     *
+     * 逐个数字的归属（`sampleFor`）——这个数字说的是哪个样本：
+     *   ① 同一行里出现的样本名（多个时取字符距离最近的那个，所以「tiny-shop 184 行、rule-engine 377 行」能逐个对上）；
+     *   ② 这一行没有样本名时，看**邻句**（上一行 / 下一行）里唯一提到的那个样本；
+     *   ③ 仍然看不出 → 用文件级归属；
+     *   ④ 都没有 → 记成「未归属」，**不声称已核对**（打印独立状态行，不混进绿色 OK）。
      */
-    const universeOf = (rel, text) => {
-      if (!/^evals\/ground-truth/.test(rel)) return samples;
-      const byName = samples.find((s) => rel.includes(s));
-      if (byName) return [byName];
-      const claimed = [
-        ...new Set([...text.matchAll(/(\d+)\s*行\s*Go/g)].map((m) => Number(m[1]))),
-      ];
-      const hit = claimed.map((n) => samples.find((s) => canon[s] === n)).filter(Boolean);
-      return [...new Set(hit)];
+    const DECL_RE = /本文件是\s*([a-z0-9-]+)\s*的标准答案/;
+    const ownerOf = (rel, text) => {
+      const byDecl = text.match(DECL_RE);
+      if (byDecl && samples.includes(byDecl[1])) return byDecl[1];
+      const byName = samples.filter((s) => rel.includes(s));
+      if (byName.length === 1) return byName[0];
+      // 「本文件只讲一个样本」这条只在标准答案里成立：README / runbook / baseline
+      // 同时讲两个样本，不能因为提了一句 `fixtures/tiny-shop` 就把它整份认成 tiny-shop。
+      if (/^evals\/ground-truth/.test(rel)) {
+        const byPath = [
+          ...new Set([...text.matchAll(/fixtures\/([^/\s`）)]+)/g)].map((mm) => mm[1])),
+        ].filter((s) => samples.includes(s));
+        if (byPath.length === 1) return byPath[0];
+      }
+      return null;
     };
+    // 名字出现的位置 + 长度：算距离时**两端取最近**。
+    // 只比「名字起点到数字起点」的距离会错：「tiny-shop 184 行、rule-engine 377 行」里
+    // 184 离 tiny-shop 起点 10 个字、离 rule-engine 起点 11 个字——差一个字就归错样本。
+    const namesIn = (s) => {
+      const hits = [];
+      for (const sample of samples) {
+        let from = 0;
+        for (;;) {
+          const at = s.indexOf(sample, from);
+          if (at === -1) break;
+          hits.push({ sample, at, len: sample.length });
+          from = at + sample.length;
+        }
+      }
+      return hits.sort((x, y) => x.at - y.at);
+    };
+    let attributed = 0;
+    const unattributed = [];
     for (const rel of scanFiles) {
-      const text = read(rel).join('\n');
-      const universe = universeOf(rel, text);
-      const allowed = universe.map((s) => canon[s]).filter((v) => v !== undefined);
-      for (const l of read(rel)) {
+      const lines = read(rel);
+      const owner = ownerOf(rel, lines.join('\n'));
+      const canonValues = Object.values(canon).filter((v) => v !== undefined);
+      for (const [li, l] of lines.entries()) {
         for (const m of l.matchAll(/(\d{2,4})\s*行/g)) {
           const num = Number(m[1]);
           const before = l.slice(0, m.index);
@@ -3348,29 +3577,62 @@ function parsePlaybookSections(pb) {
             /样本/.test(window) ||
             samples.some((s) => window.includes(s));
           if (!marked) continue;
-          if (!allowed.length) {
-            fail(
-              `${rel} 里样本规模写成「${num} 行」，但认不出是哪个样本——` +
-                `这个文件只讲一个样本，它自己的规模自述与任何样本都对不上 —— ${l.trim().slice(0, 50)}`,
-            );
-            bad += 1;
+
+          // 归属判定：同行样本名 → 邻句唯一的样本名 → 文件级归属 → 未归属
+          let sample = null;
+          const inLine = namesIn(l);
+          if (inLine.length) {
+            const start = m.index;
+            const end = m.index + m[0].length;
+            const dist = (h) => Math.min(Math.abs(h.at - start), Math.abs(h.at + h.len - end));
+            let best = inLine[0];
+            for (const h of inLine) if (dist(h) < dist(best)) best = h;
+            sample = best.sample;
+          }
+          if (!sample) {
+            const neigh = [lines[li - 1] ?? '', lines[li + 1] ?? '']
+              .flatMap((x) => namesIn(x).map((h) => h.sample));
+            const uniq = [...new Set(neigh)];
+            if (uniq.length === 1) sample = uniq[0];
+          }
+          if (!sample && owner) sample = owner;
+
+          if (!sample) {
+            // 认不出归属：只保证「取值是两个样本的实测行数之一」，不假装做过归属核对。
+            if (!canonValues.includes(num)) {
+              fail(
+                `${rel} 里样本规模写成「${num} 行」，但认不出是哪个样本，` +
+                  `取值也不在两个样本的实测行数（${canonValues.join(' / ')}）里 —— ${l.trim().slice(0, 50)}`,
+              );
+              bad += 1;
+            } else {
+              unattributed.push(`${rel}:${li + 1}「${num} 行」`);
+            }
             continue;
           }
-          if (!allowed.includes(num)) {
+          attributed += 1;
+          if (canon[sample] !== num) {
             fail(
-              `${rel} 里样本规模写成「${num} 行」，` +
-                `认不出是哪个样本：这个文件讲的是 ${universe.join(' / ')}，` +
-                `唯一真相源（evals/README.md 的样本规模表）是 ${allowed.join(' / ')} 行 —— ${l.trim().slice(0, 50)}`,
+              `${rel} 里样本规模写成「${num} 行」，但这一句讲的是 ${sample}——` +
+                `唯一真相源（evals/README.md 的样本规模表）是 ${canon[sample]} 行 —— ${l.trim().slice(0, 50)}`,
             );
             bad += 1;
           }
         }
       }
     }
+    if (unattributed.length) {
+      // 「跳过」与「通过」分开：这 N 处没有做归属钉死，只是取值落在合法集合内。
+      skip(
+        `样本规模里有 ${unattributed.length} 处句子里没有样本名、邻句也没有，无法判断它讲哪个样本：` +
+          `${unattributed.join('、')}——这些只校验了「取值是两个样本的实测行数之一」，未做归属钉死`,
+      );
+    }
     if (bad === 0) {
       ok(
-        `样本规模一致（${samples.map((s) => `${s} ${canon[s]} 行`).join(' / ')}，与实测相同，` +
-          `各文件写法一致；扫描了 ${scanFiles.length} 个文件）`,
+        `样本规模一致（${samples.map((s) => `${s} ${canon[s]} 行`).join(' / ')}，与实测相同；` +
+          `逐句按样本名钉死了 ${attributed} 处，另有 ${unattributed.length} 处无样本名（见上一条 SKIP）；` +
+          `扫描了 ${scanFiles.length} 个文件）`,
       );
     }
   }
@@ -3590,231 +3852,466 @@ function parsePlaybookSections(pb) {
 //   ① 合计行的分隔符不再只认 `/`（斜杠→逗号也是合法中文写法）；
 //      **「写了合计却认不出」必须报红**——此前是 `continue` 静默跳过整节，
 //      逐条值改错也没人管；而唯一的守卫是「一张都没查到」，少查一张完全无感。
-//      现在分成三类并**逐节计数**：已检查 / 符号表（不参与加总）/ 报红，
-//      三类之和必须等于「逐条对照」小节总数——少查一张再也不可能悄无声息。
 //   ② 比较前先断言**列数一致**、每个取值**确实是数字**：
 //      此前按位置配对，合计行少一列时比较变成 NaN（`NaN >= 0.005` 恒为 false），
 //      那一列的合计从此不再被校验，也不报任何错。
+//
+// 第 25 轮补的两条（R25C-03 / R25C-07）：
+//   ① **覆盖面**：此前只扫标题以「逐条对照」开头的小节，于是三处数字没人管——
+//      `### 每条 GT 的命中归类明细`（名字不叫「逐条对照」）那张三列式明细表，以及各节的「汇总」表。
+//      现在：明细表按它自己的三列（命中 / 归类 / 表达 × A/B/C）加总、与它自己的合计行比；
+//      汇总表的「命中 / 归类 / 表达」行与**同一 H1 小节里那张明细表的合计**比。
+//   ② **分母独立**：此前分母 M = 「逐条对照」小节数、分子 N = 真正对账的表数——**分子分母同源**，
+//      小节标题一改名，那张表就被静默踢出覆盖，守卫式 `checked + symbol + failed === M` 照样成立。
+//      现在 M 由**表头形态**独立推导（不看小节标题）：表头含 GT 且含「命中 + 归类」、
+//      或含 A–D 轮次列、或是「命中 X / 归类 / 表达」三列式。凡是这样一张表没被任何判据处理到，
+//      就报红（改名/移出命名约定不再能让它凭空消失）；另加一条**绝对下限常量**兜底。
 {
   const baseLines = read('evals/baseline.md');
   const cellSplit = (l) => l.split('|').slice(1, -1).map((x) => x.trim());
+  const plain = (s) => (s || '').replace(/\*\*/g, '').trim();
   const cellNum = (s) => {
     const m = (s || '').replace(/\*\*/g, '').match(/-?\d+(?:\.\d+)?/);
     return m ? parseFloat(m[0]) : 0;
   };
   const r2 = (n) => Math.round(n * 100) / 100;
-
-  const sections = [];
-  for (let i = 0; i < baseLines.length; i += 1) {
-    if (!/^#{2,3}\s*逐条对照/.test(baseLines[i])) continue;
-    let end = baseLines.length;
-    for (let j = i + 1; j < baseLines.length; j += 1) {
-      if (/^#{1,3}\s/.test(baseLines[j])) { end = j; break; }
-    }
-    sections.push({ title: baseLines[i].trim(), body: baseLines.slice(i, end) });
-  }
-
-  const bad = [];
-  let checked = 0; // 真正参与加总对账的表
-  let symbolTables = 0; // 不参与加总的符号表（格子里是 G×/— 这类符号，不是分数）
-  let failed = 0; // 报红的表
   // 合计行的两种分隔符：`／` `/` `，` `,` `、` 都认（斜杠换成逗号也是合法中文写法）
   const TOTAL_INLINE_RE = /合计[：:]\s*命中\s*(-?[\d.]+)\s*[／\/，,、]\s*归类\s*(-?[\d.]+)/;
   const TOTAL_WORDS = ['合计', '小计', '总计'];
-  for (const sec of sections) {
-    const tableRows = sec.body.filter((l) => /^\s*\|/.test(l));
-    if (tableRows.length < 3) {
-      bad.push(`${sec.title}：这一节里没有认出逐条对照表（表体不足 3 行）——数据没人复算`);
-      failed += 1;
-      continue;
-    }
 
-    // 认表头
-    let header = null;
-    let headerIdx = -1;
-    for (let i = 0; i < tableRows.length; i += 1) {
-      const c = cellSplit(tableRows[i]);
-      const hi = c.findIndex((x) => x.includes('命中'));
-      const ci = c.findIndex((x) => x.includes('归类'));
-      if (hi >= 0 && ci >= 0) { header = { kind: 'split', hi, ci }; headerIdx = i; break; }
-      // 轮次列是 A/B/C/D。列位不写死（此前写死 `k >= 2`，
-      // 于是「| GT | A | B | C | 说明 |」这种排法漏掉 A 列）。
-      const roundCols = c.map((x, k) => (k >= 1 && /^[A-D]$/.test(x) ? k : -1)).filter((k) => k >= 0);
-      if (roundCols.length >= 1 && c[0].includes('GT')) { header = { kind: 'pair', cols: roundCols }; headerIdx = i; break; }
-    }
-    if (!header) {
-      bad.push(`${sec.title}：这一节里没有认出逐条对照表的表头——数据没人复算`);
-      failed += 1;
-      continue;
-    }
+  // ---- 一级小节边界（汇总表要在同一个 H1 里找它的明细表）----
+  const h1At = [];
+  let h1 = -1;
+  baseLines.forEach((l, i) => {
+    if (/^#\s/.test(l)) h1 = i;
+    h1At[i] = h1;
+  });
 
-    // 数据行：GT 编号开头
+  // ---- 表清单：**只看表头形态**，不看小节标题（这是「应有对象」的那一套判据）----
+  const tables = [];
+  for (let i = 0; i < baseLines.length; i += 1) {
+    if (!/^\s*\|/.test(baseLines[i])) continue;
+    let j = i;
+    while (j < baseLines.length && /^\s*\|/.test(baseLines[j])) j += 1;
+    const body = baseLines.slice(i, j);
+    if (body.length >= 3) {
+      tables.push({ start: i, lines: body, header: cellSplit(body[0]), h1: h1At[i] });
+    }
+    i = j - 1;
+  }
+
+  /**
+   * 表形态：
+   *   triple  —— | GT | 命中 A / 归类 / 表达 | 命中 B / … | 命中 C / … |（每列三元组）
+   *   split   —— | GT | … | 命中 | 归类 |（命中与归类各占一列，单组合计）
+   *   pair    —— | GT | … | A | B | C | …（每轮一列，格子里是「命中/归类」）
+   *   summary —— | 维度 | … | 且表体里有「命中」行（汇总表）
+   * 其余形态（如 | GT | pass-2 | pass-3 | 说明 |）不是可加总表，不纳入。
+   */
+  const kindOf = (t) => {
+    const h = t.header.map(plain);
+    if (/^GT$/i.test(h[0] ?? '')) {
+      const rest = h.slice(1);
+      if (rest.length && rest.every((c) => /^命中\s+.+\s*\/\s*归类\s*\/\s*表达$/.test(c))) return 'triple';
+      const hi = h.findIndex((x) => x.includes('命中'));
+      const ci = h.findIndex((x) => x.includes('归类'));
+      if (hi >= 1 && ci >= 1) return 'split';
+      const rounds = h.map((x, k) => (k >= 1 && /^[A-D]$/.test(x) ? k : -1)).filter((k) => k >= 0);
+      if (rounds.length) return 'pair';
+      return null;
+    }
+    if (/^维度/.test(h[0] ?? '') && t.lines.some((l) => /^\|\s*(命中|归类)/.test(l))) return 'summary';
+    return null;
+  };
+
+  /** 每张明细表的列名（汇总表按列名与它对账；split 没有列维度） */
+  const colLabels = (t, kind) => {
+    if (kind === 'pair') {
+      return t.header.map(plain).map((x, k) => ({ k, name: x }))
+        .filter((c) => c.k >= 1 && /^[A-D]$/.test(c.name))
+        .map((c) => ({ k: c.k, name: c.name }));
+    }
+    if (kind === 'triple') {
+      return t.header.slice(1).map((c, i) => {
+        const m = plain(c).match(/^命中\s+([^/\s]+)\s*\//);
+        return { k: i + 1, name: m ? m[1] : null };
+      }).filter((c) => c.name);
+    }
+    return [];
+  };
+
+  /** 表格所在小节里、表后面的那一段（用来找「合计：命中 … / 归类 …」这种表外合计行） */
+  const regionAfter = (t) => {
+    const out = [];
+    for (let k = t.start + t.lines.length; k < baseLines.length; k += 1) {
+      if (/^#{1,3}\s/.test(baseLines[k])) break;
+      out.push(baseLines[k]);
+    }
+    return out;
+  };
+
+  const detailTables = tables.filter((t) => ['pair', 'split', 'triple'].includes(kindOf(t)));
+  const summaryTables = tables.filter((t) => kindOf(t) === 'summary');
+
+  // ---- 第二套判据：**按小节标题**定位「被检查对象」----
+  // 两套判据必须不同源，才不会一起失效：
+  //   「应有对象」= 表头形态认出来的可加总表（与标题无关）；
+  //   「被检查对象」= 落在「逐条对照」/「每条 GT 的命中归类明细」小节里的表。
+  // 小节标题一改名，那张表仍然在「应有对象」里，却不会被处理——于是报红。
+  // （两套都用表头形态的话，改名永远不会被发现；两套都用标题的话，
+  //   改名会让分子分母一起缩，守卫式照样成立——这正是 R25C-07 报的那个洞。）
+  const SECTION_RE = /^#{2,3}\s*(逐条对照|每条 GT 的命中归类明细)/;
+  const sectionTitleOf = (t) => {
+    for (let k = t.start; k >= 0; k -= 1) {
+      if (/^#{1,4}\s/.test(baseLines[k])) return baseLines[k].trim();
+    }
+    return '';
+  };
+  const inMatchedSection = (t) => SECTION_RE.test(sectionTitleOf(t));
+  const matchedDetail = detailTables.filter(inMatchedSection);
+
+  const bad = [];
+  let checked = 0; // 真正参与加总对账的明细表
+  let symbolTables = 0; // 不参与加总的符号表（格子里是 G×/— 这类符号，不是分数）
+  let failed = 0; // 报红的明细表
+  let summariesChecked = 0; // 与明细表合计对上的汇总表
+  let summariesFailed = 0;
+  let unpairedCols = 0; // 汇总表里没有对应明细列的列（历史基线列等）
+  const processed = new Set();
+
+  // ---- triple 的「表达」加分：从本节里「+N」的加分行读出来（不写死数字）----
+  // 首轮那张明细表不列 C1 行，而合计行的表达列含 C1 的 +0.5。判据要能承认这件事，
+  // 但不许把它做成一个容差常量——加分数额要从文件里读（读不到就按 0 处理）。
+  for (const t of detailTables) {
+    if (kindOf(t) !== 'triple') continue;
+    const labels = colLabels(t, 'triple');
+    const bonus = [];
+    // 加分行的来源：同一 H1 小节里、在明细表之前的那张「逐条对照」表（行名形如 `C1 …`，格子里写 `+0.5`）
+    const donors = detailTables.filter((d) => d.start < t.start && d.h1 === t.h1 && kindOf(d) === 'pair');
+    for (const d of donors) {
+      const dLabels = colLabels(d, 'pair');
+      for (const row of d.lines.slice(2)) {
+        const c = cellSplit(row);
+        if (!/^[A-Z]\d+/.test(plain(c[0]))) continue;
+        for (const col of dLabels) {
+          const m = plain(c[col.k]).match(/^\+\s*([\d.]+)$/);
+          if (!m) continue;
+          const at = labels.findIndex((x) => x.name === col.name);
+          if (at === -1) continue;
+          bonus[at] = r2((bonus[at] ?? 0) + parseFloat(m[1]));
+        }
+      }
+    }
+    t.bonus = bonus;
+  }
+
+  for (const t of matchedDetail) {
+    const kind = kindOf(t);
+    const where = `第 ${t.start + 1} 行那张表`;
     const dataRows = [];
-    for (let i = headerIdx + 1; i < tableRows.length; i += 1) {
-      const c = cellSplit(tableRows[i]);
-      const first = (c[0] || '').replace(/\*\*/g, '').trim();
+    const totalRows = [];
+    for (const l of t.lines.slice(2)) {
+      const c = cellSplit(l);
+      const first = plain(c[0]);
       if (/^:?-{2,}/.test(first)) continue;
-      if (/^(GT|命中合计|归类合计|合计)/.test(first)) continue;
+      if (/^(GT|命中合计|归类合计|合计|小计|总计)/.test(first)) { totalRows.push(c); continue; }
       if (!/^(G|R)\d/.test(first)) continue;
       dataRows.push(c);
     }
     if (!dataRows.length) {
-      bad.push(`${sec.title}：这一节里没有认出任何逐条数据行——数据没人复算`);
+      bad.push(`${where}：没有认出任何逐条数据行——数据没人复算`);
       failed += 1;
+      processed.add(t.start);
       continue;
     }
 
-    // 这一张表是不是「可加总」的分数表？符号表（格子里是 G×/—/G×(0.5)）加总没有意义。
-    const scoreCells = (c) => (header.kind === 'split'
-      ? [c[header.hi], c[header.ci]]
-      : header.cols.map((k) => c[k]));
-    const isScore = (v) => /^[+-]?\d/.test((v || '').replace(/\*\*/g, '').trim());
-    const scoreish = dataRows.some((c) => scoreCells(c).some((v) => isScore(v)));
-
-    // 求和
-    const computed = [];
-    if (header.kind === 'split') {
-      computed.push({
-        name: '汇总',
-        hit: r2(dataRows.reduce((s, c) => s + cellNum(c[header.hi]), 0)),
-        cls: r2(dataRows.reduce((s, c) => s + cellNum(c[header.ci]), 0)),
-      });
-    } else {
-      for (const col of header.cols) {
+    if (kind === 'split') {
+      const h = t.header.map(plain);
+      const hi = h.findIndex((x) => x.includes('命中'));
+      const ci = h.findIndex((x) => x.includes('归类'));
+      const scoreish = dataRows.some((c) => /^[+-]?\d/.test(plain(c[hi])) || /^[+-]?\d/.test(plain(c[ci])));
+      if (!scoreish) { symbolTables += 1; processed.add(t.start); continue; }
+      const hit = r2(dataRows.reduce((s, c) => s + cellNum(c[hi]), 0));
+      const cls = r2(dataRows.reduce((s, c) => s + cellNum(c[ci]), 0));
+      t.agg = [{ name: '汇总', hit, cls }];
+    } else if (kind === 'pair') {
+      const cols = colLabels(t, 'pair').map((c) => c.k);
+      const scoreish = dataRows.some((c) => cols.some((k) => /^[+-]?\d/.test(plain(c[k]))));
+      if (!scoreish) { symbolTables += 1; processed.add(t.start); continue; }
+      t.agg = colLabels(t, 'pair').map(({ k, name }) => {
         let hit = 0;
         let cls = 0;
         for (const c of dataRows) {
-          const raw = (c[col] || '').replace(/\*\*/g, '');
+          const raw = plain(c[k]);
           if (!raw || raw === '—' || raw === '-') continue;
           const parts = raw.split('/');
           hit += cellNum(parts[0]);
           cls += cellNum(parts[1]);
         }
-        computed.push({ name: cellSplit(tableRows[headerIdx])[col] || `列${col}`, hit: r2(hit), cls: r2(cls) });
-      }
+        return { name, hit: r2(hit), cls: r2(cls) };
+      });
+    } else {
+      // triple：每列一个「命中 / 归类 / 表达」三元组
+      t.agg = t.header.slice(1).map((c, i) => {
+        let hit = 0;
+        let cls = 0;
+        let expr = 0;
+        for (const row of dataRows) {
+          const parts = plain(row[i + 1]).split('/').map((x) => x.trim());
+          if (parts.length !== 3) continue;
+          hit += cellNum(parts[0]);
+          cls += cellNum(parts[1]);
+          expr += cellNum(parts[2]);
+        }
+        const m = plain(c).match(/^命中\s+([^/\s]+)\s*\//);
+        return { name: m ? m[1] : `列${i + 1}`, hit: r2(hit), cls: r2(cls), expr: r2(expr) };
+      });
     }
 
-    // 声明的合计
+    // ---- 声明的合计 ----
     let declared = null;
-    for (const l of sec.body) {
-      const m = l.match(TOTAL_INLINE_RE);
-      if (m) { declared = [{ hit: parseFloat(m[1]), cls: parseFloat(m[2]) }]; break; }
-    }
-    if (!declared) {
-      const hitRow = sec.body.find((l) => /^\s*\|/.test(l) && /命中合计/.test(l.split('|')[1] || ''));
-      const clsRow = sec.body.find((l) => /^\s*\|/.test(l) && /归类合计/.test(l.split('|')[1] || ''));
-      if (hitRow && clsRow) {
-        // 取值：**只裁掉末尾的空列**，中间的空格保留 ——
-        // 此前 filter(v => v !== null) 把中间的空格也滤掉了，
-        // 于是列会错位，而错位之后对不上也不报错。
-        const vals = (row) => {
-          const cells = cellSplit(row).slice(2)
-            .map((v) => v.replace(/\*\*/g, '').trim());
-          while (cells.length && cells[cells.length - 1] === '') cells.pop();
-          return cells.map((v) => {
-            const m = v.match(/^([\d.]+)$/);
-            return m ? parseFloat(m[1]) : null;
-          });
-        };
-        const hitVals = vals(hitRow);
-        const clsVals = vals(clsRow);
-        declared = hitVals.map((h, k) => ({ hit: h, cls: k < clsVals.length ? clsVals[k] : null }));
+    if (kind === 'triple') {
+      const row = totalRows.find((c) => /^合计/.test(plain(c[0])));
+      if (row) {
+        const cells = row.slice(1);
+        const vals = cells.map((c) => (plain(c).match(/-?\d+(?:\.\d+)?/g) || []).map(Number));
+        if (vals.length === t.agg.length && vals.every((v) => v.length === 3)) {
+          declared = vals.map(([hit, cls, expr]) => ({ hit, cls, expr }));
+        }
+      }
+    } else {
+      const region = regionAfter(t);
+      const inline = region.map((l) => l.match(TOTAL_INLINE_RE)).find(Boolean);
+      if (inline) {
+        declared = [{ hit: parseFloat(inline[1]), cls: parseFloat(inline[2]) }];
+      } else {
+        // 合计行既可能在本表内（`| **命中合计 / 25** | … |`），也可能紧跟在表后面。
+        // 两者都用**原始行文本**去找（totalRows 已经是切好的格子，不能混进来）。
+        const rowLines = [...t.lines, ...region.filter((l) => /^\s*\|/.test(l))];
+        const hitRow = rowLines.find((r) => /命中合计/.test(plain(cellSplit(r)[0] ?? '')));
+        const clsRow = rowLines.find((r) => /归类合计/.test(plain(cellSplit(r)[0] ?? '')));
+        if (hitRow && clsRow) {
+          // 取值：**只裁掉末尾的空列**，中间的空格保留 ——
+          // 此前 filter(v => v !== null) 把中间的空格也滤掉了，于是列会错位，而错位之后对不上也不报错。
+          const vals = (row) => {
+            const cells = cellSplit(row).slice(2).map((v) => plain(v));
+            while (cells.length && cells[cells.length - 1] === '') cells.pop();
+            return cells.map((v) => {
+              const m = v.match(/^([\d.]+)$/);
+              return m ? parseFloat(m[1]) : null;
+            });
+          };
+          const hitVals = vals(hitRow);
+          const clsVals = vals(clsRow);
+          declared = hitVals.map((h, k) => ({ hit: h, cls: k < clsVals.length ? clsVals[k] : null }));
+        }
       }
     }
 
-    const bodyText = sec.body.join('\n');
-    const wroteTotal = TOTAL_WORDS.some((w) => bodyText.includes(w));
+    const region = regionAfter(t);
+    const wroteTotal = TOTAL_WORDS.some((w) => region.join('\n').includes(w))
+      || totalRows.some((c) => TOTAL_WORDS.some((w) => plain(c[0]).includes(w)));
 
-    if (!scoreish) {
-      // 符号表：加总没有意义，跳过是合理的——但要**计数**，
-      // 并且「写了合计却认不出」不能被当成符号表悄悄放过。
-      if (wroteTotal && !declared) {
+    if (!declared) {
+      if (wroteTotal) {
         bad.push(
-          `${sec.title}：正文里写了「合计」，但认不出合计行——` +
-            '合计行必须能被解析（形如「合计：命中 7.0 / 归类 5.5」或「命中合计 / 归类合计」两行），' +
-            '否则这一节的分数没人复算',
+          `${where}：正文里写了「合计」，但认不出合计行——` +
+            '合计行必须能被解析（形如「合计：命中 7.0 / 归类 5.5」「命中合计 / 归类合计」两行，' +
+            '或明细表里的「| 合计 | 命中 / 归类 / 表达 | … |」），否则这一节的分数没人复算',
         );
         failed += 1;
       } else {
-        symbolTables += 1;
+        bad.push(`${where}：这一节有逐条分数，却没认出合计行——这一节压根没有合计声明，逐条表必须能自己加出合计`);
+        failed += 1;
       }
-      continue;
-    }
-
-    if (!declared) {
-      bad.push(
-        `${sec.title}：这一节有逐条分数，却没认出合计行——` +
-          (wroteTotal
-            ? '正文里写了「合计」但解析不出来（形如「合计：命中 7.0 / 归类 5.5」或「命中合计 / 归类合计」两行）'
-            : '这一节压根没有合计声明，逐条表必须能自己加出合计') +
-          '，否则第三方复算不出这个分数',
-      );
-      failed += 1;
+      processed.add(t.start);
       continue;
     }
 
     // ---- 断言：列数一致、每个取值确实是数字（不许用 NaN 静默跳过）----
-    if (declared.length !== computed.length) {
+    if (declared.length !== t.agg.length) {
       bad.push(
-        `${sec.title}：合计行的列数（${declared.length}）与逐条表对不上（${computed.length}）——` +
+        `${where}：合计行的列数（${declared.length}）与逐条表对不上（${t.agg.length}）——` +
           '逐条表与合计行必须一一对应，否则有一列的合计从未被校验',
       );
       failed += 1;
+      processed.add(t.start);
       continue;
     }
     let cellBad = false;
-    for (let i = 0; i < computed.length; i += 1) {
+    for (let i = 0; i < t.agg.length; i += 1) {
       const d0 = declared[i];
       if (typeof d0.hit !== 'number' || Number.isNaN(d0.hit)
         || typeof d0.cls !== 'number' || Number.isNaN(d0.cls)) {
         bad.push(
-          `${sec.title} 的「${computed[i].name}」：合计行里有一列取不到数字` +
+          `${where} 的「${t.agg[i].name}」：合计行里有一列取不到数字` +
             `（命中=${JSON.stringify(d0.hit)}、归类=${JSON.stringify(d0.cls)}）——` +
             '这一列的合计从未被校验，也不该被静默跳过',
         );
         cellBad = true;
       }
+      if (kind === 'triple' && (typeof d0.expr !== 'number' || Number.isNaN(d0.expr))) {
+        bad.push(`${where} 的「${t.agg[i].name}」：合计行的「表达」列取不到数字`);
+        cellBad = true;
+      }
     }
     if (cellBad) {
       failed += 1;
+      processed.add(t.start);
       continue;
     }
 
     checked += 1;
-    for (let i = 0; i < computed.length; i += 1) {
-      const c0 = computed[i];
+    processed.add(t.start);
+    t.declared = declared;
+    for (let i = 0; i < t.agg.length; i += 1) {
+      const c0 = t.agg[i];
       const d0 = declared[i];
       if (Math.abs(c0.hit - d0.hit) >= 0.005) {
-        bad.push(`${sec.title} 的「${c0.name}」：逐行相加命中 ${c0.hit}，合计行写的是 ${d0.hit}`);
+        bad.push(`${where} 的「${c0.name}」：逐行相加命中 ${c0.hit}，合计行写的是 ${d0.hit}`);
       }
       if (Math.abs(c0.cls - d0.cls) >= 0.005) {
-        bad.push(`${sec.title} 的「${c0.name}」：逐行相加归类 ${c0.cls}，合计行写的是 ${d0.cls}`);
+        bad.push(`${where} 的「${c0.name}」：逐行相加归类 ${c0.cls}，合计行写的是 ${d0.cls}`);
+      }
+      if (kind === 'triple') {
+        // 表达列：明细表只列 GT 行，而「表达质量」的合计含 C1 这类**加分项**（+0.5）。
+        // 判据不写死 0.5：加分从本节其他表的「+N」行里读出来（`| C1 并发查过没问题 | +0.5 | … |`），
+        // 读不到就按 0 处理（那时差额必须为 0）。
+        const bonus = t.bonus?.[i] ?? 0;
+        const diff = r2(c0.expr - d0.expr);
+        if (Math.abs(diff) >= 0.005 && Math.abs(r2(diff + bonus)) >= 0.005) {
+          bad.push(
+            `${where} 的「${c0.name}」：逐行相加表达 ${c0.expr}，合计行写的是 ${d0.expr}` +
+              `（差额 ${diff}，本节声明的加分是 ${bonus}）`,
+          );
+        }
       }
     }
   }
 
-  // ---- 表数对账：少查一张再也不可能悄无声息 ----
-  if (checked + symbolTables + failed !== sections.length) {
+  // ---- 汇总表 ↔ 明细表合计 ----
+  for (const s of summaryTables) {
+    const where = `第 ${s.start + 1} 行那张「汇总」表`;
+    // 参考表：同一 H1 里、带合计的明细表。优先挑**小节标题与汇总表小节共享词元**的那张
+    //（「### tiny-shop 回归」那张汇总只能对「## 逐条对照 · tiny-shop」，
+    //  否则会拿 rule-engine 的表去比，报一堆假红——两个样本的汇总是并排的）。
+    const tokensOf = (title) => new Set(
+      (title.match(/[a-z][a-z0-9-]*[a-z0-9]/g) ?? []).filter((w) => w.length > 2),
+    );
+    const sTokens = tokensOf(sectionTitleOf(s));
+    const candsAll = detailTables.filter((d) => d.h1 === s.h1 && d.declared);
+    const shares = (d) => {
+      const dTokens = tokensOf(sectionTitleOf(d));
+      return [...sTokens].some((w) => dTokens.has(w));
+    };
+    const afterAll = candsAll.filter((d) => d.start > s.start);
+    const beforeAll = candsAll.filter((d) => d.start < s.start);
+    const ref = afterAll.find(shares)
+      ?? (sTokens.size ? beforeAll.filter(shares).pop() : undefined)
+      ?? afterAll[0]
+      ?? beforeAll[beforeAll.length - 1]
+      ?? null;
+    if (!ref) {
+      bad.push(`${where}：同一小节里找不到可对账的明细表——这张汇总表的数字没人复算`);
+      summariesFailed += 1;
+      continue;
+    }
+    const refLabels = ref.declared.map((v, i) => ({
+      name: (colLabels(ref, kindOf(ref))[i] ?? {}).name ?? (v.name ?? `列${i + 1}`),
+      i,
+    }));
+    // 列配对：按列名一一对上；没有对应明细列的列（历史基线列）计入 unpaired
+    const used = new Set();
+    const map = new Map();
+    s.header.slice(1).forEach((h, idx) => {
+      const name = plain(h).split(/[（(]/)[0].trim();
+      const hit = refLabels.find((r) => r.name === name && !used.has(r.i));
+      if (hit) { used.add(hit.i); map.set(idx + 1, hit.i); } else unpairedCols += 1;
+    });
+    const problems = [];
+    for (const row of s.lines.slice(2)) {
+      const c = cellSplit(row);
+      const label = plain(c[0]);
+      // 只比「主口径」的那一行：辅助值（「归类（按已报条目，辅助看）」）与
+      // 「命中条目」（列的是 GT 编号，不是分数）都不是加总结果，比了就是假红。
+      if (/辅助|已报|条目|占比|%/i.test(label)) continue;
+      let field = null;
+      // 用 startsWith 而不是 includes：「归类（按 12 项，**未命中**计 0）」里也含「命中」二字，
+      // 按 includes 判会把它当成「命中」行去比，报一堆假红。
+      if (label.startsWith('命中')) field = 'hit';
+      else if (label.startsWith('归类')) field = 'cls';
+      else if (label.startsWith('表达')) field = 'expr';
+      if (!field) continue;
+      for (const [k, ri] of map.entries()) {
+        const cell = plain(c[k] ?? '');
+        const m = cell.match(/-?\d+(?:\.\d+)?/);
+        if (!m) continue; // 「—」等非数字格：不参与
+        const expectVal = ref.declared[ri][field];
+        if (typeof expectVal !== 'number' || Number.isNaN(expectVal)) continue;
+        if (Math.abs(parseFloat(m[0]) - expectVal) >= 0.005) {
+          problems.push(
+            `「${label.split(/[（(]/)[0]}」列的 ${refLabels[ri].name}：汇总表写 ${m[0]}，` +
+              `明细表合计是 ${expectVal}`,
+          );
+        }
+      }
+    }
+    if (problems.length) {
+      bad.push(`${where}：与同节明细表的合计对不上：\n      ${problems.join('\n      ')}`);
+      summariesFailed += 1;
+    } else {
+      summariesChecked += 1;
+    }
+  }
+
+  // ---- 覆盖面守卫（R25C-07）：**两套判据**对账 ----
+  // 「应有对象」= 表头形态认出来的全部可加总表（与「逐条对照」这个小节标题无关）；
+  // 「被检查对象」= 落在已识别小节里、且真的被处理过的表。两者不一致 → 有一张表凭空消失了。
+  const unhandled = detailTables.filter((t) => !inMatchedSection(t));
+  if (unhandled.length) {
+    fail(
+      `第 57 项有 ${unhandled.length} 张可加总表没有任何判据处理它：` +
+        `${unhandled.map((t) => `第 ${t.start + 1} 行（所在小节：${sectionTitleOf(t) || '（无标题）'}）`).join('、')}——` +
+        '这些表是**按表头形态**认出来的（表头含 GT 且含命中/归类列），却没落在「逐条对照」' +
+        '或「每条 GT 的命中归类明细」小节里：小节标题被改名或移出了命名约定，这张表就从覆盖里消失了',
+    );
+    bad.push('有可加总表没被处理');
+  }
+  if (checked + symbolTables + failed !== matchedDetail.length) {
     fail(
       `第 57 项的表数对不上：已检查 ${checked} 张 + 符号表 ${symbolTables} 张 + 报红 ${failed} 张 ` +
-        `≠「逐条对照」小节共 ${sections.length} 节——有一节既没被检查、也没被计入，说明它被静默跳过了`,
+        `≠ 落在已识别小节里的可加总表 ${matchedDetail.length} 张——有一张既没被检查、也没被计入，说明它被静默跳过了`,
     );
-    bad.push('逐条对照小节的对账计数不一致');
+    bad.push('可加总表的对账计数不一致');
   }
-  if (checked === 0) {
-    fail('第 57 项没认出任何一张可加总的逐条对照表——检查项本身失效了（baseline 的「逐条对照」小节名或表结构改了？）');
-    bad.push('没有可检查的逐条表');
+  if (summariesChecked + summariesFailed !== summaryTables.length) {
+    fail(
+      `第 57 项的汇总表数对不上：对账通过 ${summariesChecked} 张 + 报红 ${summariesFailed} 张 ` +
+        `≠ 认出的汇总表 ${summaryTables.length} 张`,
+    );
+    bad.push('汇总表的对账计数不一致');
+  }
+  // 绝对下限（**独立常量**，不由被检文件里的表数反算）：可加总表少于这个数，
+  // 说明识别口径已经跟文件脱节（大量表被移出可加总形态），这一项正在空转。
+  const MIN_SUMMABLE_TABLES = 5;
+  if (detailTables.length + summaryTables.length < MIN_SUMMABLE_TABLES) {
+    fail(
+      `第 57 项只认出 ${detailTables.length + summaryTables.length} 张可加总表（明细 ${detailTables.length} + 汇总 ${summaryTables.length}），` +
+        `低于下限 ${MIN_SUMMABLE_TABLES} 张——baseline 的表结构或表头写法变了，这一项已经扫不到东西`,
+    );
+    bad.push('可加总表低于下限');
   }
   if (bad.length) {
     fail(`baseline 的逐条对照表与合计行对不上：\n    ${bad.join('\n    ')}\n  逐条表必须能自己加出合计，否则第三方复算不出这个分数`);
   } else {
     ok(
-      `baseline 的逐条对照表逐行相加与合计行一致（检查了 ${checked}/${sections.length} 张表，` +
-        `另有 ${symbolTables} 张符号表不参与加总）`,
+      `baseline 的逐条对照表逐行相加与合计行一致（明细表 ${checked}/${matchedDetail.length} 张已对账，` +
+        `另有 ${symbolTables} 张符号表不参与加总；汇总表 ${summariesChecked}/${summaryTables.length} 张已与同节明细表的合计对上，` +
+        `另有 ${unpairedCols} 列在明细表里没有对应列、未参与；覆盖面按表头形态独立推导为 ` +
+        `${detailTables.length} 张明细表 + ${summaryTables.length} 张汇总表，全部落在已识别小节里）`,
     );
   }
 }
-
 // ---------- 59. 规模/性能类的形态清单与例外措辞必须逐项一致 ----------
 // 第 24 轮的两条发现都落在同一处：
 //   R24B-01 —— 降级为 P2 的规模/性能类条目，同一份契约同时要求它写「触发」行和四行制；
