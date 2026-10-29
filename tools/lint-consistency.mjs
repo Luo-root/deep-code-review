@@ -1508,7 +1508,80 @@ function parsePlaybookSections(pb) {
   }
 }
 
-// ---------- 35. 本文件末尾才判定退出码 ----------
+// ---------- 35. 待拍板条目的字段集必须与字段定义一致 ----------
+// 契约把字段定义放在 SKILL.md 的七段结构里（路线 A / 路线 B 六字段），
+// 但两档模式表与 output-template 的快模式说明曾写成「两条路」（五字段）。
+// 字段集不统一，按字段解析报告的下游读不到「路线 A」。
+{
+  const EXPECTED = ['现状', '证据', '路线 A', '路线 B', '建议', '要你定'];
+  const bad = [];
+  const sources = [
+    ['SKILL.md', read('SKILL.md')],
+    ['references/output-template.md', read('references/output-template.md')],
+    ['references/regression-review.md', read('references/regression-review.md')],
+  ];
+  for (const [name, lines] of sources) {
+    // 判据：找「声明字段集」的行，而不是找「提到待拍板的行」。
+    // 声明字段集的行有两个特征——含路线 token，且同句里出现 ≥3 个字段名。
+    // 只按「同句含待拍板」来挑行会漏：regression-review.md 的字段集写在
+    // 「撞见方向性取舍时……正文要给〈现状 / 证据 / 路线 A / 路线 B / 建议 / 要你定〉」，
+    // 句中没有「待拍板」二字，旧判据因此误报「找不到表述」。
+    // 「≥3 个字段名」把枚举行和「两条路径」这类普通叙述行分开——
+    // 叙述行最多命中 1 个字段名（实测 README/output-template 的示例行均为 1）。
+    const candidates = lines.filter(
+      (l) =>
+        (l.includes('路线 A') || l.includes('两条路')) &&
+        EXPECTED.filter((f) => l.includes(f)).length >= 3,
+    );
+    if (!candidates.length) { bad.push(`${name}：找不到待拍板条目的字段集表述`); continue; }
+    for (const hit of candidates) {
+      for (const f of EXPECTED) {
+        if (!hit.includes(f)) bad.push(`${name}：待拍板字段集缺少「${f}」`);
+      }
+    }
+  }
+  if (bad.length) {
+    fail(
+      `待拍板条目的字段集不统一：\n    ${bad.join('\n    ')}\n` +
+        `规范字段集（以 SKILL.md 的字段定义为准）：${EXPECTED.join(' / ')}`,
+    );
+  } else {
+    ok(`待拍板条目的字段集在三处一致（${EXPECTED.join(' / ')}）`);
+  }
+}
+
+// ---------- 36. 快模式的固定栏位必须有字面量并在示例里出现 ----------
+// 「意图：」「宣称：… ／ 实际：…」「未覆盖：」这三个栏位是固定形态的——
+// 只描述内容不给字面量，模型每次的写法都不同，靠标签解析的下游就找不到它们。
+{
+  const TOKENS = ['意图：', '宣称：', '实际：', '未覆盖：'];
+  const bad = [];
+  for (const [name, rel] of [
+    ['references/regression-review.md', 'references/regression-review.md'],
+    ['references/output-template.md', 'references/output-template.md'],
+  ]) {
+    const lines = read(rel);
+    for (const t of TOKENS) {
+      if (!lines.some((l) => l.includes(t))) bad.push(`${name}：找不到「${t}」这个字面量`);
+    }
+  }
+  // 快模式示例里必须真的出现这四个 token（示例是模型模仿的对象）
+  const rr = read('references/regression-review.md');
+  const sample = rr.filter((l) => l.startsWith('意图：') || l.startsWith('宣称：') || l.startsWith('未覆盖：'));
+  for (const t of TOKENS) {
+    if (!sample.some((l) => l.includes(t))) bad.push(`references/regression-review.md 的快模式示例里没有出现「${t}」`);
+  }
+  if (bad.length) {
+    fail(
+      `快模式的固定栏位缺字面量或示例没示范：\n    ${bad.join('\n    ')}\n` +
+        `固定栏位：${TOKENS.join(' / ')}——形态要固定，示例必须示范出来。`,
+    );
+  } else {
+    ok('快模式的固定栏位（意图 / 宣称-实际 / 未覆盖）有字面量且示例示范了');
+  }
+}
+
+// ---------- 37. 本文件末尾才判定退出码 ----------
 // 每一项检查都必须排在退出码判定之前，否则排在后面的检查报红时进程已经退出了 0，
 // CI 照样绿。**加新检查时务必加在这行之前。**
 console.log('');
