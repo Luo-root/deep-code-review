@@ -95,7 +95,7 @@ const RESULT_VALUES = [
   { kind: 'exact', text: '无发现', desc: '无发现' },
   { kind: 'pointer', text: '已查（见 X）', desc: '已查（见 X）' },
   { kind: 'exact', text: '未扫（理由）', desc: '未扫（理由）' },
-  { kind: 'count', text: 'n 条', desc: 'n 条' },
+  { kind: 'count', text: 'n 条（级别）', desc: 'n 条（级别）' },
   { kind: 'count+pointer', text: 'n 条（级别），另见 X', desc: 'n 条（级别），另见 X' },
 ];
 // 结果格数量 = RESULT_VALUES.length。第 22 项用它与各处「N 种取值」的声明比对。
@@ -152,8 +152,9 @@ const CANONICAL_RESULTS = RESULT_VALUES.map((v) => v.desc);
 
     // 结果格取值：逐条匹配 RESULT_VALUES 派生的正则。
     // 「n 条（级别），另见 X」是第 5 种取值：本维既有自己的条目、又有结论归到别的维度时用。
+    // 裸「n 条」（不带级别）不是合法取值——级别是与结论行对账的唯一钥匙。
     const resultRe = new RegExp(
-      `^(?:无发现|已查（见 .+）|未扫（.+）|\\d+ 条(（.+）)?(，另见 .+)?)$`,
+      `^(?:无发现|已查（见 .+）|未扫（.+）|\\d+ 条（.+）(，另见 .+)?)$`,
     );
     const offenders = [];
     for (const t of tables) {
@@ -913,6 +914,51 @@ function parsePlaybookSections(pb) {
     );
   } else {
     ok(`各处「取值数量」的声明与实际取值集合一致（${ACTUAL_RESULT_COUNT} 种，扫到 ${seen.length} 处声明）`);
+  }
+
+  // ---------- 22b. 取值清单本身必须逐字一致 ----------
+  // 数量对了不等于清单对了：「五种取值」下，清单里第 4 项写成 `n 条` 而不是 `n 条（级别）`，
+  // 数量仍是五种，模型却会以为可以不带级别——而级别正是与结论行对账的唯一钥匙。
+  // 所以这里把各处声明里的反引号清单抠出来，与 RESULT_VALUES 逐项比对。
+  {
+    const FORM_TOKENS = RESULT_VALUES.map((v) => v.text);
+    const listBad = [];
+    const checkedFiles = [];
+    for (const [name, lines] of Object.entries(files)) {
+      for (const [i, l] of lines.entries()) {
+        if (!l.includes('取值')) continue;
+        if (!NUM_RE.test(l)) continue;
+        // 抠出这一行里所有反引号包裹的 token
+        const tokens = [...l.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+        // 只看长得像取值形态的 token（按出现顺序去重）
+        const seenForms = [];
+        for (const t of tokens) {
+          if (!/n 条|已查（见|未扫（|无发现/.test(t)) continue;
+          if (seenForms.includes(t)) continue;
+          seenForms.push(t);
+        }
+        if (!seenForms.length) continue;
+        checkedFiles.push(`${name}:${i + 1}`);
+        if (seenForms.length !== FORM_TOKENS.length) {
+          listBad.push(`${name}:${i + 1} 列了 ${seenForms.length} 种取值（应 ${FORM_TOKENS.length} 种）：${seenForms.join(' / ')}`);
+          continue;
+        }
+        for (let k = 0; k < FORM_TOKENS.length; k += 1) {
+          if (seenForms[k] !== FORM_TOKENS[k]) {
+            listBad.push(`${name}:${i + 1} 第 ${k + 1} 种取值是「${seenForms[k]}」，应为「${FORM_TOKENS[k]}」`);
+          }
+        }
+      }
+    }
+    if (listBad.length) {
+      fail(
+        `取值清单在各处副本里不一致：\n    ${listBad.join('\n    ')}\n` +
+          `规范清单（唯一真相源）：${FORM_TOKENS.join(' / ')}\n` +
+          '数量相同不代表清单相同——第 4 项差一个「（级别）」，模型就会以为可以不带级别。',
+      );
+    } else {
+      ok(`各处声明的取值清单与规范清单逐项一致（检查了 ${checkedFiles.length} 处：${checkedFiles.join('、')}）`);
+    }
   }
 }
 
