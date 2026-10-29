@@ -11,6 +11,13 @@
 
 ## 准备
 
+**第 0 步：先跑 lint。** 契约自身矛盾时，评测分数没有意义——测的是哪一份契约都不确定。
+
+```bash
+node tools/lint-skill.mjs .        # 必须 exit 0
+node tools/lint-consistency.mjs .  # 必须 exit 0
+```
+
 ```bash
 # 把样本复制到临时目录，别在仓库里改
 cp -r evals/fixtures/tiny-shop /tmp/dcr-eval
@@ -26,9 +33,17 @@ Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule
 
 > **不要把 `ground-truth.md` / `ground-truth-rule-engine.md` / `rubric.md` 放进被审目录**——被测模型看到标准答案，这次评测就废了。
 >
-> **样本副本要做中性化**：仓库里两个样本的 `README.md` 都写着「刻意植入缺陷」，
-> 那句话等于给被测模型透题。复制到隔离目录后，把 README 换成**中性描述版**
-> （去掉缺陷披露、去掉「怎么用」段），其余文件**逐字节**复制，SHA256 必须与仓库一致。
+> **样本副本要做中性化**：复制到隔离目录后，用仓内的 `README.neutral.md` **覆盖** `README.md`
+> （内容一样的话就不用换），并把 `README.neutral.md` 本身删掉——留两份 README 会让被测模型不知道读哪份。
+> 其余文件**逐字节**复制，SHA256 必须与仓库一致。
+>
+> **中性化的判据只有一条：保留「是什么」（约定、规模上限、结构），删掉「所以会怎样」（后果描述、缺陷披露）。**
+> 按这条判据，两个样本要删的分别是：
+> - tiny-shop：「刻意植入缺陷」这句披露；「否则同一个金额在两条路径上会算出不同的分数」（后果，正是 G6 的答案）；
+>   「不构成对外公开契约」（这是从 `internal/` 推出来的**结论**，模型该自己推）；「见 `evals/runbook.md`」这段用法。
+> - rule-engine：「刻意植入缺陷」这句披露；「不构成对外公开契约」；「见 `evals/runbook.md`」这段用法。
+> - **rule-engine 的规模上限（200 商品行 / 200 条规则 / 依赖链最深 50 层 / 一条规则最多 12 个 SKU）必须保留**——
+>   R1 与 R4 的成立点就是「在 README 写的上限下会怎样」，删了它这个样本就测不出规模扫描了。
 >
 > **副作用**：报告里引用 README 的行号会比仓库 fixture 差 1–2 行。
 > 标准答案只引用 `.go` 文件行号，不受影响；评分时**不要**因为 README 行号差一位就扣「表达质量」。
@@ -37,9 +52,51 @@ Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule
 > 而不是禁止它读安装目录——它读不到就会去磁盘上乱找，实测捡到过一份过期旧副本，
 > 导致那一轮按旧口径判案、整轮作废。要禁的是**仓库里的 `evals/` 目录**（那里才有标准答案）。
 
-## 跑三种问法
+### D 轮：带 git 基线的副本（快模式轮）
 
-同一份样本，用三种问法各跑一轮。这一步同时验证**路由**和**两档模式**：
+D 轮要的是**一个真实的基线**，不是「假装有基线」。基线提交与 HEAD 提交必须落在不同的文件上，
+否则「本次引入 vs 既有」就分不出来——那样 D 轮验的就不是快模式了。
+
+基线提交的构成：**`go.mod` + `README.md` + `internal/checkout/`（含测试）**；
+HEAD 提交**新增 `internal/refund/refund.go`**。归属表见 `ground-truth.md` 的「D 轮归属表」。
+
+Windows PowerShell：
+
+```powershell
+$env:TEMP
+Copy-Item -Recurse evals\fixtures\tiny-shop $env:TEMP\dcr-eval-d
+Copy-Item evals\fixtures\tiny-shop\README.neutral.md $env:TEMP\dcr-eval-d\README.md -Force
+Remove-Item $env:TEMP\dcr-eval-d\README.neutral.md
+
+cd $env:TEMP\dcr-eval-d
+git init
+git add go.mod README.md internal\checkout
+git commit -m "baseline: 结算流程"
+git add internal\refund
+git commit -m "feat: 新增退款流程"
+```
+
+Linux / macOS：
+
+```bash
+cp -r evals/fixtures/tiny-shop /tmp/dcr-eval-d
+cp evals/fixtures/tiny-shop/README.neutral.md /tmp/dcr-eval-d/README.md
+rm /tmp/dcr-eval-d/README.neutral.md
+cd /tmp/dcr-eval-d
+git init
+git add go.mod README.md internal/checkout
+git commit -m "baseline: 结算流程"
+git add internal/refund
+git commit -m "feat: 新增退款流程"
+```
+
+> **没配 `user.email` 会提交失败**：用 `git -c user.email=eval@example.com -c user.name=eval commit` 代替 `git commit`。
+> **默认分支名可能是 `master` 也可能是 `main`**——不影响评测，但记下来（报告里的基线名要写实际那个）。
+> **`git init` 后不要 `git add -A`**：那会把 `internal/refund` 一起塞进基线提交，基线就不成基线了。
+
+## 跑四种问法
+
+同一份样本，用四种问法各跑一轮。这一步同时验证**路由**和**两档模式**：
 
 | 轮次 | 问法 | 期望 |
 |---|---|---|
@@ -84,14 +141,32 @@ Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule
 - **原始输出目录与样本目录不要有父子关系**，也不要放在同一个父目录下——
   被测上下文有可能往父目录翻，命中任何一份历史评审都会污染这一轮。
 - **两个样本的隔离目录也要分开**，理由同上：rule-engine 的标准答案和 tiny-shop 的不能互相可见。
-- **不是每次都要跑全三种问法**。改 skill 正文时跑 B+C；
+- **不是每次都要跑全四种问法**。改 skill 正文时跑 B+C；
   只改 description 时重点跑 D（路由）；改输出契约时重点看 C（结构）。
   涉及新能力（反驳 / 规模扫描）的改动，**必须**跑 rule-engine 的 B+C——tiny-shop 测不出它。
 
 ## 什么时候必须跑
 
-- 改了 `SKILL.md` 或 `references/` 下任一文件 → **必须跑**（闸门、成立条件、playbook 覆盖范围、标签形态、输出骨架任一处变动都会改结论行或改误报率）。
+- 改了 `SKILL.md` 或 `references/` 下任一文件 → **必须跑评测**（闸门、成立条件、playbook 覆盖范围、标签形态、输出骨架任一处变动都会改结论行或改误报率）。
+- 改了 `tools/` 下的 lint → **不必跑评测**，但**必须跑 lint**。lint 不改变被测行为，它只决定「契约自相矛盾时能不能被拦住」——把某个检查放松了，评测分数不会动，但守门没了。所以这条是「改 lint 必跑 lint」，不是「改 lint 必跑评测」。
 - 只改了 README / 徽章 / CI → 不必跑。
+
+**改动文件 → 必须跑哪几轮**（只跑 B+C 会漏掉某些改动的验收点）：
+
+| 改了什么 | 必须跑 |
+|---|---|
+| `SKILL.md` 正文（判据、流程、输出契约） | tiny-shop B + C，rule-engine B + C |
+| `references/dimensions.md`（七维细则、成立条件） | tiny-shop B + C，rule-engine B + C |
+| `references/playbooks.md`（载体判据、必查项、覆盖声明） | tiny-shop B + C，rule-engine B + C |
+| `references/verification.md`（闸门表、证据阶梯） | tiny-shop B + C，rule-engine B + C |
+| `references/regression-review.md`（快模式形态、计数格式、固定行） | tiny-shop **D**——只跑 B+C 测不到快模式 |
+| `references/output-template.md`（骨架与措辞） | tiny-shop B + C + **D** |
+| `SKILL.md` 的 frontmatter `description` | tiny-shop **D**（验路由） |
+| `tools/` | 跑 lint 即可，不必跑评测 |
+| `evals/` 下的 GT 与 rubric | **必须全跑**（改了口径，旧分数全部作废） |
+
+**基线有效性自查**：改完契约但还没重跑 → **当前基线失效**。
+`evals/baseline.md` 顶部的「基线状态」一节写着当前基线对应哪个提交；对不上就不能拿它比。
 
 ## 归档
 
@@ -101,7 +176,11 @@ Copy-Item -Recurse evals\fixtures\rule-engine $env:TEMP\dcr-eval-rule
 
 **存哪**：
 
-- 原始输出（每轮一份全文）**不入版本控制**，放仓外（例如 `scratchpads\dcr-eval-archive\round-{A,B,C}-v4.md`）。
+- 原始输出（每轮一份全文）**不入版本控制**，放**仓外**。用绝对路径，别用仓库内的相对路径——
+  仓内的 `scratchpads\` 一次 `git add -A` 就会把上一轮评审全文提交进要发布的仓库，
+  而评审全文本身就是答案（本手册上面那条「别把历次原始输出放在样本目录旁边」说的就是同一件事）。
+  - Windows 示例：`%LOCALAPPDATA%\Temp-dcr-archive\round-{A,B,C,D}-vN.md`
+  - Linux / macOS 示例：`/tmp/dcr-eval-archive/round-{A,B,C,D}-vN.md`
 - 评分表入版本控制，追加到 `evals/baseline.md`；跑完一版就追加一节，**不要覆盖旧记录**——旧记录是「当时按当时的标准答案跑出来的结果」，属历史事实。
 - 改了 `ground-truth.md` / `ground-truth-rule-engine.md` 或 `rubric.md` 之后，旧分数与新分数**不可比**，必须在记录里写明，并重跑一轮拿新口径的基线。
 
